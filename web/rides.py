@@ -8,6 +8,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS rides (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL REFERENCES users(id),
+                client_ride_uuid TEXT,
                 started_at TEXT NOT NULL,
                 ended_at TEXT NOT NULL,
                 distance_km REAL NOT NULL DEFAULT 0,
@@ -18,6 +19,14 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """
+        )
+        # 기존에 만들어둔 DB에는 client_ride_uuid 컬럼이 없을 수 있어 마이그레이션
+        try:
+            client.execute("ALTER TABLE rides ADD COLUMN client_ride_uuid TEXT")
+        except Exception:
+            pass  # 이미 있음
+        client.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_rides_client_uuid ON rides(client_ride_uuid)"
         )
         client.execute(
             "CREATE INDEX IF NOT EXISTS idx_rides_user ON rides(user_id)"
@@ -77,23 +86,47 @@ def _to_sql_datetime(iso_str):
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def create_ride(user_id, started_at, ended_at, distance_km, duration_sec,
-                 avg_speed_kmh, hard_brake_count=0, safety_score=None):
+def save_ride(user_id, client_ride_uuid, started_at, ended_at, distance_km,
+              duration_sec, avg_speed_kmh, hard_brake_count, safety_score,
+              points, events):
+    """라이딩 저장. client_ride_uuid로 재시도를 감지해 중복 저장을 막는다
+    (같은 uuid로 다시 오면 이미 저장된 ride_id를 그대로 돌려주고,
+    points/events도 이미 들어가 있으면 다시 넣지 않는다)."""
     with get_client() as client:
         rs = client.execute(
-            """
-            INSERT INTO rides
-                (user_id, started_at, ended_at, distance_km, duration_sec,
-                 avg_speed_kmh, hard_brake_count, safety_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
-            """,
-            [
-                user_id, _to_sql_datetime(started_at), _to_sql_datetime(ended_at),
-                distance_km, duration_sec, avg_speed_kmh, hard_brake_count, safety_score,
-            ],
+            "SELECT id FROM rides WHERE client_ride_uuid = ?", [client_ride_uuid]
         )
-        return rs.rows[0][0]
+        if rs.rows:
+            ride_id = rs.rows[0][0]
+        else:
+            rs = client.execute(
+                """
+                INSERT INTO rides
+                    (user_id, client_ride_uuid, started_at, ended_at, distance_km,
+                     duration_sec, avg_speed_kmh, hard_brake_count, safety_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                [
+                    user_id, client_ride_uuid, _to_sql_datetime(started_at), _to_sql_datetime(ended_at),
+                    distance_km, duration_sec, avg_speed_kmh, hard_brake_count, safety_score,
+                ],
+            )
+            ride_id = rs.rows[0][0]
+
+        points_done = client.execute(
+            "SELECT COUNT(*) FROM ride_points WHERE ride_id = ?", [ride_id]
+        ).rows[0][0]
+        events_done = client.execute(
+            "SELECT COUNT(*) FROM ride_events WHERE ride_id = ?", [ride_id]
+        ).rows[0][0]
+
+    if points_done == 0:
+        add_points(ride_id, points)
+    if events_done == 0:
+        add_events(ride_id, events)
+
+    return ride_id
 
 
 def add_points(ride_id, points):

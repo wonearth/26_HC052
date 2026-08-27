@@ -49,6 +49,72 @@
   const points = [];
   const events = [];
 
+  function generateUuid() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+  const rideUuid = generateUuid();
+
+  const PENDING_KEY = "pmadas-pending-rides";
+
+  function loadPending() {
+    try {
+      return JSON.parse(localStorage.getItem(PENDING_KEY) || "[]");
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function savePending(list) {
+    try {
+      localStorage.setItem(PENDING_KEY, JSON.stringify(list));
+    } catch (e) {
+      /* localStorage 사용 불가 — 이번 저장만 재시도 큐 없이 진행됨 */
+    }
+  }
+
+  function queuePendingRide(payload) {
+    const list = loadPending();
+    list.push(payload);
+    savePending(list);
+  }
+
+  function removePendingRide(clientRideId) {
+    savePending(loadPending().filter((p) => p.client_ride_id !== clientRideId));
+  }
+
+  async function uploadRide(payload, attempts) {
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const res = await fetch(window.RIDE_UPLOAD_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          keepalive: true,
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) return true;
+      } catch (e) {
+        /* 재시도 */
+      }
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+    return false;
+  }
+
+  async function flushPendingRides() {
+    for (const payload of loadPending()) {
+      if (payload.client_ride_id === rideUuid) continue; // 이번 라이딩은 endRide()가 처리
+      const ok = await uploadRide(payload, 1);
+      if (ok) removePendingRide(payload.client_ride_id);
+    }
+  }
+
+  if (window.RIDE_TOKEN) flushPendingRides();
+
   function formatElapsed(ms) {
     const totalSec = Math.floor(ms / 1000);
     const m = String(Math.floor(totalSec / 60)).padStart(2, "0");
@@ -174,26 +240,23 @@
     const avgSpeedKmh = totalDistanceKm > 0 ? totalDistanceKm / (durationSec / 3600) : 0;
 
     if (window.RIDE_TOKEN) {
-      try {
-        await fetch(window.RIDE_UPLOAD_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          keepalive: true,
-          body: JSON.stringify({
-            token: window.RIDE_TOKEN,
-            started_at: startedAtIso,
-            ended_at: new Date().toISOString(),
-            distance_km: totalDistanceKm,
-            duration_sec: durationSec,
-            avg_speed_kmh: avgSpeedKmh,
-            hard_brake_count: 0,
-            points: points,
-            events: events,
-          }),
-        });
-      } catch (e) {
-        /* 업로드 실패해도 일단 홈으로 돌아감 */
-      }
+      const payload = {
+        token: window.RIDE_TOKEN,
+        client_ride_id: rideUuid,
+        started_at: startedAtIso,
+        ended_at: new Date().toISOString(),
+        distance_km: totalDistanceKm,
+        duration_sec: durationSec,
+        avg_speed_kmh: avgSpeedKmh,
+        hard_brake_count: 0,
+        points: points,
+        events: events,
+      };
+      // 네트워크가 끊겨도 데이터가 사라지지 않도록 먼저 로컬에 저장해두고,
+      // 성공하면 지운다. 여기서 실패해도 다음 라이딩 시작할 때 자동 재시도된다.
+      queuePendingRide(payload);
+      const ok = await uploadRide(payload, 3);
+      if (ok) removePendingRide(rideUuid);
     }
 
     window.location.href = window.WEB_APP_URL;

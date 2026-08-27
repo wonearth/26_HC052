@@ -177,9 +177,11 @@ def save_ride():
 
     points = data.get("points") or []
     events = data.get("events") or []
+    client_ride_uuid = data.get("client_ride_id") or f"legacy-{secrets.token_hex(16)}"
 
-    ride_id = rides.create_ride(
+    ride_id = rides.save_ride(
         user_id=user_id,
+        client_ride_uuid=client_ride_uuid,
         started_at=data.get("started_at"),
         ended_at=data.get("ended_at"),
         distance_km=float(data.get("distance_km") or 0),
@@ -187,9 +189,9 @@ def save_ride():
         avg_speed_kmh=float(data.get("avg_speed_kmh") or 0),
         hard_brake_count=int(data.get("hard_brake_count") or 0),
         safety_score=_compute_safety_score(events),
+        points=points,
+        events=events,
     )
-    rides.add_points(ride_id, points)
-    rides.add_events(ride_id, events)
 
     return _with_cors(jsonify({"ok": True, "ride_id": ride_id}))
 
