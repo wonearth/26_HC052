@@ -209,35 +209,34 @@ def _describe_event(e):
     return f"전방 {zone} {cls} 감지"
 
 
-def _build_route_segments(points, width=260, height=150, pad=14):
+def _group_route_by_risk(points):
+    """실제 위도/경도를 위험도가 바뀌는 지점마다 구간으로 나눈다 (지도에 그릴 폴리라인용)."""
     if len(points) < 2:
         return []
-    lats = [p["lat"] for p in points]
-    lngs = [p["lng"] for p in points]
-    lat_span = max(max(lats) - min(lats), 1e-6)
-    lng_span = max(max(lngs) - min(lngs), 1e-6)
-    min_lat, min_lng = min(lats), min(lngs)
-
-    def project(p):
-        x = pad + (p["lng"] - min_lng) / lng_span * (width - 2 * pad)
-        y = height - pad - (p["lat"] - min_lat) / lat_span * (height - 2 * pad)
-        return x, y
-
     segments = []
     current_risk = points[0]["risk_level"]
-    current_pts = [project(points[0])]
+    current_latlngs = [[points[0]["lat"], points[0]["lng"]]]
     for p in points[1:]:
-        pt = project(p)
-        current_pts.append(pt)
+        latlng = [p["lat"], p["lng"]]
+        current_latlngs.append(latlng)
         if p["risk_level"] != current_risk:
-            segments.append({"risk": current_risk, "points": current_pts})
+            segments.append({"risk": current_risk, "latlngs": current_latlngs})
             current_risk = p["risk_level"]
-            current_pts = [pt]
-    segments.append({"risk": current_risk, "points": current_pts})
-
-    for seg in segments:
-        seg["d"] = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in seg["points"])
+            current_latlngs = [latlng]
+    segments.append({"risk": current_risk, "latlngs": current_latlngs})
     return segments
+
+
+def _events_for_map(events):
+    result = []
+    for e in events:
+        if e.get("lat") is None or e.get("lng") is None:
+            continue
+        result.append({
+            "lat": e["lat"], "lng": e["lng"],
+            "risk": e["risk_level"], "desc": _describe_event(e),
+        })
+    return result
 
 
 def _build_report_context(ride):
@@ -257,7 +256,8 @@ def _build_report_context(ride):
     return {
         "ride": ride,
         "date_label": f"{started.month}월 {started.day}일 · {started:%H:%M}–{ended:%H:%M}",
-        "route_segments": _build_route_segments(ride["points"]),
+        "route_segments": _group_route_by_risk(ride["points"]),
+        "events_for_map": _events_for_map(ride["events"]),
         "distance_km": round(ride["distance_km"], 1),
         "duration_label": f"{duration_sec // 60:02d}:{duration_sec % 60:02d}",
         "avg_speed_kmh": round(ride["avg_speed_kmh"], 1),

@@ -252,7 +252,8 @@ def get_ride_detail(ride_id, user_id):
 
         evs = client.execute(
             """
-            SELECT occurred_at, risk_level, object_class, distance_m, ttc_sec, in_collision_zone
+            SELECT occurred_at, risk_level, object_class, distance_m, ttc_sec,
+                   in_collision_zone, lat, lng
             FROM ride_events WHERE ride_id = ? ORDER BY occurred_at
             """,
             [ride_id],

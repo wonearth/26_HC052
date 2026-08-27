@@ -252,3 +252,17 @@ button { font-family: inherit; }
 .day-ride-card { display: block; padding: 12px 14px; }
 .day-ride-card + .day-ride-card { border-top: 1px solid var(--line); }
 .day-ride-card .row-between { align-items: flex-start; }
+
+/* ---------- 리포트 상세: 실제 지도(Leaflet) ---------- */
+#route-map {
+  height: 220px; border-radius: 16px; overflow: hidden; border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+#route-map.map-dark .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.9) saturate(0.8);
+}
+.leaflet-popup-content-wrapper, .leaflet-popup-tip {
+  background: var(--surface); color: var(--text);
+}
+.leaflet-popup-content { font-family: 'IBM Plex Sans KR', sans-serif; font-size: 12.5px; margin: 8px 10px; }
+.leaflet-control-attribution { font-size: 9.5px !important; }

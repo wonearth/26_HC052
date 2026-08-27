@@ -1,5 +1,11 @@
 {% extends "base.html" %}
 {% block title %}PM ADAS · 라이딩 리포트{% endblock %}
+{% block extra_head %}
+{% if ride is not none %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+{% endif %}
+{% endblock %}
 {% block content %}
 <section class="screen-pad">
 {% if ride is none %}
@@ -20,21 +26,17 @@
     <h1 class="greet-h" style="font-size:19px;">라이딩 리포트</h1>
   </div>
 
-  <div class="map" style="height:150px;">
-    <svg viewBox="0 0 260 150">
-      {% for seg in route_segments %}
-      <path d="{{ seg.d }}" fill="none" stroke="var(--{{ seg.risk }})" stroke-width="4" stroke-linecap="round"/>
-      {% else %}
-      <text x="130" y="78" text-anchor="middle" fill="var(--text-dim)" font-size="11">경로 데이터가 부족해요</text>
-      {% endfor %}
-    </svg>
-  </div>
+  {% if route_segments %}
+  <div id="route-map"></div>
   <div class="legend">
     <span class="li"><span class="sw" style="background:var(--safe)"></span>안전</span>
     <span class="li"><span class="sw" style="background:var(--caution)"></span>주의</span>
     <span class="li"><span class="sw" style="background:var(--warning)"></span>경고</span>
     <span class="li"><span class="sw" style="background:var(--danger)"></span>위험</span>
   </div>
+  {% else %}
+  <div class="card"><p style="margin:0; font-size:13px; color:var(--text-dim);">경로 데이터가 부족해요.</p></div>
+  {% endif %}
 
   <div class="card ring-wrap">
     <svg width="58" height="58" viewBox="0 0 58 58">
@@ -69,4 +71,59 @@
   </div>
 {% endif %}
 </section>
+{% if ride is not none and route_segments %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+(function () {
+  const segments = {{ route_segments|tojson }};
+  const events = {{ events_for_map|tojson }};
+
+  function riskColor(risk) {
+    return getComputedStyle(document.documentElement).getPropertyValue("--" + risk).trim();
+  }
+
+  function isDark() {
+    const explicit = document.documentElement.getAttribute("data-theme");
+    if (explicit === "dark") return true;
+    if (explicit === "light") return false;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  const mapEl = document.getElementById("route-map");
+  if (isDark()) mapEl.classList.add("map-dark");
+
+  const map = L.map("route-map", { zoomControl: false, attributionControl: true });
+
+  // 무료 OSM 타일만 쓰고, 다크모드에서는 CSS 필터로 어둡게 반전 (별도 키 필요한 다크
+  // 타일 서비스는 쓰지 않음 — .map-dark 규칙은 style.css 참고)
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19,
+  }).addTo(map);
+
+  const allLatLngs = [];
+  segments.forEach((seg) => {
+    L.polyline(seg.latlngs, {
+      color: riskColor(seg.risk),
+      weight: 4,
+      lineCap: "round",
+    }).addTo(map);
+    allLatLngs.push(...seg.latlngs);
+  });
+
+  events.forEach((e) => {
+    L.circleMarker([e.lat, e.lng], {
+      radius: 6,
+      color: riskColor(e.risk),
+      fillColor: riskColor(e.risk),
+      fillOpacity: 0.9,
+      weight: 2,
+    }).bindPopup(e.desc).addTo(map);
+  });
+
+  map.fitBounds(allLatLngs, { padding: [16, 16] });
+})();
+</script>
+{% endif %}
 {% endblock %}
