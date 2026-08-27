@@ -1,6 +1,16 @@
-{% extends "base.html" %}
-{% block title %}PM ADAS · 실시간 주행{% endblock %}
-{% block content %}
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PM ADAS · 실시간 주행</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<main class="app-body">
 <section class="screen-pad">
   <div class="row-between">
     <span class="chip safe"><span class="d safe"></span>라이딩 중</span>
@@ -35,8 +45,10 @@
   </div>
 
   <div class="btn-row">
-    <a href="{{ url_for('home') }}" class="btn-outline danger">종료</a>
+    <a href="{{ web_app_url }}" class="btn-outline danger">종료</a>
   </div>
 </section>
+</main>
 <script src="{{ url_for('static', filename='js/live.js') }}"></script>
-{% endblock %}
+</body>
+</html>

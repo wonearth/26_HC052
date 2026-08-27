@@ -3,7 +3,7 @@
     <svg class="icon" viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5M6 10v9h5v-5h2v5h5v-9"/></svg>
     <span>홈</span>
   </a>
-  <a href="{{ url_for('live') }}" class="navitem {{ 'active' if request.path == url_for('live') else '' }}">
+  <a href="{{ pi_live_url }}" class="navitem">
     <svg class="icon" viewBox="0 0 24 24"><polygon points="7,5 19,12 7,19" stroke-linejoin="round"/></svg>
     <span>주행</span>
   </a>
