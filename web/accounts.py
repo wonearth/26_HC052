@@ -3,7 +3,10 @@ import os
 import libsql_client
 from werkzeug.security import check_password_hash, generate_password_hash
 
-DB_URL = os.environ.get("TURSO_DATABASE_URL", "file:users.db")
+_raw_db_url = os.environ.get("TURSO_DATABASE_URL", "file:users.db")
+# libsql:// 는 웹소켓(Hrana) 프로토콜을 쓰는데, 서버리스 환경에서 연결이
+# 불안정해서 매 요청이 짧게 끝나는 https:// (Hrana-over-HTTP)로 바꿔서 사용.
+DB_URL = _raw_db_url.replace("libsql://", "https://", 1)
 DB_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
 
