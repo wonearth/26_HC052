@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}PM ADAS · 홈{% endblock %}
+{% block content %}
+<section class="screen-pad">
+  <div class="greet-dim">안녕하세요, 지원님</div>
+  <h1 class="greet-h">오늘도 안전하게<br>달려볼까요?</h1>
+
+  <a href="{{ url_for('live') }}" class="btn-primary">
+    <svg class="icon" viewBox="0 0 24 24"><polygon points="7,5 19,12 7,19" stroke-linejoin="round"/></svg>
+    라이딩 시작
+  </a>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-label">이번 주</span>
+      <span class="streak">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 2c1 4-3 5-3 9a3 3 0 0 0 6 0c1.2 1 2 2.6 2 4.2A5.2 5.2 0 0 1 12 20a5.5 5.2 0 0 1-5-5.2C7 11 8.5 9 9.5 7.5 10.2 6.4 12 4.7 12 2Z"/></svg>
+        {{ streak_days }}일 연속
+      </span>
+    </div>
+    <div class="stat-row">
+      <div class="stat-col"><div class="stat-v mono">{{ weekly.distance_km }}<span class="unit">km</span></div><div class="stat-l">총 거리</div></div>
+      <div class="stat-col"><div class="stat-v mono">{{ weekly.count }}<span class="unit">회</span></div><div class="stat-l">주행 횟수</div></div>
+      <div class="stat-col"><div class="stat-v mono safe">{{ weekly.avg_score }}</div><div class="stat-l">평균 안전점수</div></div>
+    </div>
+  </div>
+
+  <div class="section-label">최근 라이딩</div>
+  <div class="card list-card">
+    {% for ride in recent_rides %}
+    <div class="list-row">
+      <div class="list-l">
+        <span class="t">{{ ride.date }} · {{ ride.distance_km }}km</span>
+        <span class="s">{{ ride.duration_min }}분 · 평균 {{ ride.avg_speed }}km/h</span>
+      </div>
+      <span class="chip {{ ride.risk_level }}"><span class="d {{ ride.risk_level }}"></span>{{ ride.risk_label }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -7,7 +7,7 @@ import numpy as np
 import onnxruntime as ort
 import time
 from scipy.optimize import linear_sum_assignment
-from flask import Flask, Response
+from flask import Flask, Response, render_template
 from collections import deque
 from picamera2 import Picamera2
 
@@ -495,16 +495,23 @@ tracker = None
 
 
 @app.route("/")
-def index():
-    return """
-    <html>
-    <head><title>PM ADAS - RaspberryPi</title></head>
-    <body style="background:#000; text-align:center; margin:0;">
-        <h2 style="color:white;">PM ADAS Live Stream</h2>
-        <img src="/video_feed" width="640">
-    </body>
-    </html>
-    """
+def home():
+    weekly = {"distance_km": 12.4, "count": 4, "avg_score": 88}
+    streak_days = 3
+    recent_rides = [
+        {"date": "8월 25일", "distance_km": 5.2, "duration_min": 22, "avg_speed": 14.1,
+         "risk_label": "주의 1회", "risk_level": "caution"},
+        {"date": "8월 23일", "distance_km": 3.8, "duration_min": 17, "avg_speed": 13.4,
+         "risk_label": "위험 1회", "risk_level": "danger"},
+    ]
+    return render_template(
+        "home.html", weekly=weekly, streak_days=streak_days, recent_rides=recent_rides
+    )
+
+
+@app.route("/live")
+def live():
+    return render_template("live.html")
 
 
 @app.route("/video_feed")
