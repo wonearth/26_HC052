@@ -4,7 +4,7 @@
 <section class="screen-pad">
   <div class="row-between">
     <span class="chip safe"><span class="d safe"></span>라이딩 중</span>
-    <span class="chip neutral">Pi 연결 대기</span>
+    <span class="chip neutral" id="gps-status">GPS 확인 중</span>
   </div>
 
   <div>
@@ -38,4 +38,5 @@
     <a href="{{ url_for('home') }}" class="btn-outline danger">종료</a>
   </div>
 </section>
+<script src="{{ url_for('static', filename='js/live.js') }}"></script>
 {% endblock %}
