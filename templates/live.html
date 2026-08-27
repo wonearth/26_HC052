@@ -45,10 +45,15 @@
   </div>
 
   <div class="btn-row">
-    <a href="{{ web_app_url }}" class="btn-outline danger">종료</a>
+    <button id="end-ride-btn" type="button" class="btn-outline danger">종료</button>
   </div>
 </section>
 </main>
+<script>
+  window.RIDE_TOKEN = {{ ride_token|tojson }};
+  window.RIDE_UPLOAD_URL = {{ ride_upload_url|tojson }};
+  window.WEB_APP_URL = {{ web_app_url|tojson }};
+</script>
 <script src="{{ url_for('static', filename='js/live.js') }}"></script>
 </body>
 </html>

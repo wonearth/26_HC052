@@ -3,10 +3,22 @@
   const speedEl = document.getElementById("stat-speed");
   const distanceEl = document.getElementById("stat-distance");
   const gpsStatusEl = document.getElementById("gps-status");
+  const riskBanner = document.getElementById("risk-banner");
+  const riskT1 = riskBanner.querySelector(".t1");
+  const riskT2 = riskBanner.querySelector(".t2");
+  const eventsEl = document.getElementById("stat-events");
+  const endBtn = document.getElementById("end-ride-btn");
 
+  const startedAtIso = new Date().toISOString();
   const startTime = Date.now();
   let totalDistanceKm = 0;
+  let currentSpeedKmh = 0;
   let lastPosition = null;
+  let lastRisk = "safe";
+  let eventCount = 0;
+
+  const points = [];
+  const events = [];
 
   function formatElapsed(ms) {
     const totalSec = Math.floor(ms / 1000);
@@ -42,53 +54,52 @@
     timerEl.textContent = formatElapsed(Date.now() - startTime);
   }, 1000);
 
-  if (!("geolocation" in navigator)) {
-    setGpsStatus("GPS 미지원 브라우저", "danger");
-    return;
-  }
+  if ("geolocation" in navigator) {
+    navigator.geolocation.watchPosition(
+      (pos) => {
+        setGpsStatus("GPS 연결됨", "safe");
 
-  navigator.geolocation.watchPosition(
-    (pos) => {
-      setGpsStatus("GPS 연결됨", "safe");
+        const { latitude, longitude, speed } = pos.coords;
+        const here = { lat: latitude, lng: longitude };
 
-      const { latitude, longitude, speed } = pos.coords;
-      const here = { lat: latitude, lng: longitude };
-
-      if (lastPosition) {
-        const deltaKm = haversineKm(lastPosition, here);
-        if (deltaKm > 0.001) {
-          totalDistanceKm += deltaKm;
-          distanceEl.textContent = totalDistanceKm.toFixed(1);
+        if (lastPosition) {
+          const deltaKm = haversineKm(lastPosition, here);
+          if (deltaKm > 0.001) {
+            totalDistanceKm += deltaKm;
+            distanceEl.textContent = totalDistanceKm.toFixed(1);
+          }
         }
-      }
-      lastPosition = here;
+        lastPosition = here;
 
-      const kmh = speed != null && speed >= 0 ? speed * 3.6 : null;
-      speedEl.textContent = kmh != null ? kmh.toFixed(1) : "-";
-    },
-    (err) => {
-      setGpsStatus(
-        err.code === err.PERMISSION_DENIED ? "GPS 권한 필요" : "GPS 오류",
-        "danger"
-      );
-    },
-    { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
-  );
+        const kmh = speed != null && speed >= 0 ? speed * 3.6 : null;
+        currentSpeedKmh = kmh != null ? kmh : currentSpeedKmh;
+        speedEl.textContent = kmh != null ? kmh.toFixed(1) : "-";
 
-  const riskBanner = document.getElementById("risk-banner");
-  const riskT1 = riskBanner.querySelector(".t1");
-  const riskT2 = riskBanner.querySelector(".t2");
-  const eventsEl = document.getElementById("stat-events");
-  const riskLevels = ["safe", "caution", "warning", "danger"];
-  let eventCount = 0;
-  let lastRisk = "safe";
+        points.push({
+          lat: latitude,
+          lng: longitude,
+          recorded_at: new Date().toISOString(),
+          risk_level: lastRisk,
+        });
+      },
+      (err) => {
+        setGpsStatus(
+          err.code === err.PERMISSION_DENIED ? "GPS 권한 필요" : "GPS 오류",
+          "danger"
+        );
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+    );
+  } else {
+    setGpsStatus("GPS 미지원 브라우저", "danger");
+  }
 
   async function pollLiveState() {
     try {
       const res = await fetch("/api/live_state");
       const data = await res.json();
 
-      riskBanner.classList.remove(...riskLevels);
+      riskBanner.classList.remove("safe", "caution", "warning", "danger");
       riskBanner.classList.add(data.risk);
       riskT1.textContent = data.title;
       riskT2.textContent = data.message;
@@ -96,6 +107,16 @@
       if (data.risk !== "safe" && lastRisk === "safe") {
         eventCount += 1;
         eventsEl.textContent = eventCount;
+        events.push({
+          occurred_at: new Date().toISOString(),
+          risk_level: data.risk,
+          object_class: data.class_name || null,
+          distance_m: data.distance_m,
+          ttc_sec: data.ttc_sec,
+          in_collision_zone: !!data.in_collision_zone,
+          lat: lastPosition ? lastPosition.lat : null,
+          lng: lastPosition ? lastPosition.lng : null,
+        });
       }
       lastRisk = data.risk;
     } catch (e) {
@@ -105,4 +126,39 @@
 
   pollLiveState();
   setInterval(pollLiveState, 1500);
+
+  async function endRide() {
+    endBtn.disabled = true;
+    endBtn.textContent = "저장 중...";
+
+    const durationSec = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
+    const avgSpeedKmh = totalDistanceKm > 0 ? totalDistanceKm / (durationSec / 3600) : 0;
+
+    if (window.RIDE_TOKEN) {
+      try {
+        await fetch(window.RIDE_UPLOAD_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          keepalive: true,
+          body: JSON.stringify({
+            token: window.RIDE_TOKEN,
+            started_at: startedAtIso,
+            ended_at: new Date().toISOString(),
+            distance_km: totalDistanceKm,
+            duration_sec: durationSec,
+            avg_speed_kmh: avgSpeedKmh,
+            hard_brake_count: 0,
+            points: points,
+            events: events,
+          }),
+        });
+      } catch (e) {
+        /* 업로드 실패해도 일단 홈으로 돌아감 */
+      }
+    }
+
+    window.location.href = window.WEB_APP_URL;
+  }
+
+  endBtn.addEventListener("click", endRide);
 })();

@@ -3,12 +3,13 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
 import threading
+from urllib.parse import urljoin
 import cv2
 import numpy as np
 import onnxruntime as ort
 import time
 from scipy.optimize import linear_sum_assignment
-from flask import Flask, Response, render_template, jsonify
+from flask import Flask, Response, render_template, jsonify, request
 from collections import deque
 from picamera2 import Picamera2
 
@@ -268,6 +269,10 @@ _live_state = {
     "risk": "safe",
     "title": RISK_TITLES["SAFE"],
     "message": "위험 요소가 감지되지 않았어요.",
+    "class_name": None,
+    "distance_m": None,
+    "ttc_sec": None,
+    "in_collision_zone": False,
 }
 
 _frame_lock = threading.Lock()
@@ -284,16 +289,26 @@ def describe_target(class_name, distance, ttc, in_collision_zone):
 def update_live_state(worst_target):
     if worst_target is None:
         risk_key, message = "SAFE", "위험 요소가 감지되지 않았어요."
+        class_name = distance = ttc = None
+        in_collision_zone = False
     else:
         risk_key = worst_target["risk"]
         message = describe_target(
             worst_target["class_name"], worst_target["distance"],
             worst_target["ttc"], worst_target["in_collision_zone"]
         )
+        class_name = worst_target["class_name"]
+        distance = worst_target["distance"]
+        ttc = worst_target["ttc"]
+        in_collision_zone = worst_target["in_collision_zone"]
     with _state_lock:
         _live_state["risk"] = risk_key.lower()
         _live_state["title"] = RISK_TITLES[risk_key]
         _live_state["message"] = message
+        _live_state["class_name"] = class_name
+        _live_state["distance_m"] = distance
+        _live_state["ttc_sec"] = ttc
+        _live_state["in_collision_zone"] = in_collision_zone
 
 
 def get_live_state():
@@ -560,7 +575,14 @@ tracker = None
 
 @app.route("/")
 def live():
-    return render_template("live.html", web_app_url=WEB_APP_URL)
+    ride_token = request.args.get("token", "")
+    ride_upload_url = urljoin(WEB_APP_URL, "/api/rides")
+    return render_template(
+        "live.html",
+        web_app_url=WEB_APP_URL,
+        ride_token=ride_token,
+        ride_upload_url=ride_upload_url,
+    )
 
 
 @app.route("/api/live_state")
