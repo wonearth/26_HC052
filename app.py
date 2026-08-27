@@ -2,6 +2,7 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
+import threading
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -251,11 +252,61 @@ def get_final_risk(distance, ttc, in_collision_zone):
 
 fps_list = []
 
+# =========================
+# 실시간 위험도 상태 공유 (감지 스레드 -> /api/live_state)
+# =========================
+RISK_RANK = {"SAFE": 0, "CAUTION": 1, "WARNING": 2, "DANGER": 3}
+RISK_TITLES = {
+    "SAFE": "현재 상태 · 안전",
+    "CAUTION": "현재 상태 · 주의",
+    "WARNING": "현재 상태 · 경고",
+    "DANGER": "현재 상태 · 위험",
+}
+
+_state_lock = threading.Lock()
+_live_state = {
+    "risk": "safe",
+    "title": RISK_TITLES["SAFE"],
+    "message": "위험 요소가 감지되지 않았어요.",
+}
+
+_frame_lock = threading.Lock()
+_latest_jpeg = None
+
+
+def describe_target(class_name, distance, ttc, in_collision_zone):
+    zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
+    if ttc is not None:
+        return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
+    return f"전방 {zone_desc} {class_name} 감지 · {distance:.1f}m"
+
+
+def update_live_state(worst_target):
+    if worst_target is None:
+        risk_key, message = "SAFE", "위험 요소가 감지되지 않았어요."
+    else:
+        risk_key = worst_target["risk"]
+        message = describe_target(
+            worst_target["class_name"], worst_target["distance"],
+            worst_target["ttc"], worst_target["in_collision_zone"]
+        )
+    with _state_lock:
+        _live_state["risk"] = risk_key.lower()
+        _live_state["title"] = RISK_TITLES[risk_key]
+        _live_state["message"] = message
+
+
+def get_live_state():
+    with _state_lock:
+        return dict(_live_state)
+
 
 # =========================
-# 실시간 영상 처리
+# 실시간 영상 처리 (백그라운드 스레드에서 계속 실행)
 # =========================
-def generate_frames(picam2, yolo_session, yolo_input_name, tracker):
+def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
+    global _latest_jpeg
+
     frame_count = 0
     last_online_targets = []
 
@@ -370,6 +421,9 @@ def generate_frames(picam2, yolo_session, yolo_input_name, tracker):
         # 개발용 Collision Zone 표시
         cv2.polylines(display_frame, [collision_zone], True, (255, 255, 255), 1, cv2.LINE_AA)
 
+        frame_worst_rank = -1
+        frame_worst_target = None
+
         for target in last_online_targets:
             x1, y1, x2, y2 = map(int, target.bbox)
 
@@ -406,6 +460,17 @@ def generate_frames(picam2, yolo_session, yolo_input_name, tracker):
                 if final_risk == "DANGER":
                     danger_detected = True
 
+                rank = RISK_RANK[final_risk]
+                if rank > frame_worst_rank:
+                    frame_worst_rank = rank
+                    frame_worst_target = {
+                        "risk": final_risk,
+                        "class_name": class_name,
+                        "distance": distance,
+                        "ttc": ttc,
+                        "in_collision_zone": in_collision_zone,
+                    }
+
             else:
                 risk_color = RISK_COLORS["UNKNOWN"]
                 label = class_name
@@ -432,6 +497,8 @@ def generate_frames(picam2, yolo_session, yolo_input_name, tracker):
                 display_frame, label, (x1 + 5, label_y + text_h + 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA
             )
+
+        update_live_state(frame_worst_target)
 
         # DANGER 객체가 하나라도 있으면 상단 충돌 경고
         if danger_detected:
@@ -478,12 +545,8 @@ def generate_frames(picam2, yolo_session, yolo_input_name, tracker):
 
         frame_bytes = buffer.tobytes()
 
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n"
-            + frame_bytes
-            + b"\r\n"
-        )
+        with _frame_lock:
+            _latest_jpeg = frame_bytes
 
 
 # =========================
@@ -502,22 +565,27 @@ def live():
 
 @app.route("/api/live_state")
 def live_state():
-    # TODO: generate_frames()의 실제 판단 결과(final_risk 등)로 교체 예정.
-    # 지금은 감지 루프와 연결되기 전까지 화면 흐름 확인용 목업 데이터.
-    cycle = int(time.time()) % 30
-    if cycle < 18:
-        state = {"risk": "safe", "title": "현재 상태 · 안전", "message": "위험 요소가 감지되지 않았어요."}
-    elif cycle < 24:
-        state = {"risk": "caution", "title": "현재 상태 · 주의", "message": "전방 진행 경로 밖 보행자 감지 · 6.4m"}
-    else:
-        state = {"risk": "warning", "title": "현재 상태 · 경고", "message": "전방 진행 경로 내 보행자 접근 · TTC 2.1초"}
-    return jsonify(state)
+    return jsonify(get_live_state())
+
+
+def stream_frames():
+    while True:
+        with _frame_lock:
+            frame_bytes = _latest_jpeg
+        if frame_bytes is not None:
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n"
+                + frame_bytes
+                + b"\r\n"
+            )
+        time.sleep(0.05)
 
 
 @app.route("/video_feed")
 def video_feed():
     return Response(
-        generate_frames(picam2, yolo_session, yolo_input_name, tracker),
+        stream_frames(),
         mimetype="multipart/x-mixed-replace; boundary=frame"
     )
 
@@ -572,10 +640,18 @@ def main():
         max_lost_frames=MAX_LOST_FRAMES
     )
 
+    detection_thread = threading.Thread(
+        target=detection_loop,
+        args=(picam2, yolo_session, yolo_input_name, tracker),
+        daemon=True,
+    )
+    detection_thread.start()
+    print("4. 감지 스레드 시작!")
+
     print("🚀 Flask 서버 시작! 브라우저에서 http://라즈베리파이IP:5000 접속")
 
     try:
-        app.run(host="0.0.0.0", port=5000, threaded=False)
+        app.run(host="0.0.0.0", port=5000, threaded=True)
     finally:
         if picam2 is not None:
             picam2.stop()
