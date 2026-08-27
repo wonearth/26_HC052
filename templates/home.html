@@ -2,7 +2,7 @@
 {% block title %}PM ADAS · 홈{% endblock %}
 {% block content %}
 <section class="screen-pad">
-  <div class="greet-dim">안녕하세요, 지원님</div>
+  <div class="greet-dim">안녕하세요, {{ current_user.nickname }}님</div>
   <h1 class="greet-h">오늘도 안전하게<br>달려볼까요?</h1>
 
   <a href="{{ url_for('live') }}" class="btn-primary">

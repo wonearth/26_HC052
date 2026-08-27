@@ -1,0 +1,26 @@
+{% extends "auth_base.html" %}
+{% block title %}PM ADAS · 회원가입{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand">PM ADAS</div>
+    <h1 class="auth-title">닉네임과 비밀번호만으로<br>시작해요</h1>
+    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+    <form method="post" class="auth-form" id="signup-form">
+      <label class="field-label">닉네임
+        <div class="field-with-btn">
+          <input type="text" name="nickname" id="nickname" required maxlength="12" autocomplete="username" value="{{ nickname or '' }}">
+          <button type="button" class="btn-check" id="check-btn">중복확인</button>
+        </div>
+        <span class="field-hint" id="nickname-hint"></span>
+      </label>
+      <label class="field-label">비밀번호
+        <input type="password" name="password" required minlength="4" autocomplete="new-password">
+      </label>
+      <button type="submit" class="btn-primary full">가입하기</button>
+    </form>
+    <div class="auth-switch">이미 계정이 있나요? <a href="{{ url_for('login') }}">로그인</a></div>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='js/signup.js') }}"></script>
+{% endblock %}

@@ -10,10 +10,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 {% include "_theme_preload.html" %}
 </head>
-<body>
-  <main class="app-body">
-    {% block content %}{% endblock %}
-  </main>
-  {% include "_bottomnav.html" %}
+<body class="auth-body">
+  {% block content %}{% endblock %}
 </body>
 </html>

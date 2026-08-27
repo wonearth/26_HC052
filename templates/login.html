@@ -1,0 +1,21 @@
+{% extends "auth_base.html" %}
+{% block title %}PM ADAS · 로그인{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand">PM ADAS</div>
+    <h1 class="auth-title">다시 만나서 반가워요</h1>
+    {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+    <form method="post" class="auth-form">
+      <label class="field-label">닉네임
+        <input type="text" name="nickname" required maxlength="12" autocomplete="username">
+      </label>
+      <label class="field-label">비밀번호
+        <input type="password" name="password" required autocomplete="current-password">
+      </label>
+      <button type="submit" class="btn-primary full">로그인</button>
+    </form>
+    <div class="auth-switch">아직 계정이 없나요? <a href="{{ url_for('signup') }}">회원가입</a></div>
+  </div>
+</div>
+{% endblock %}

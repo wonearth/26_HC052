@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}PM ADAS · 설정{% endblock %}
+{% block content %}
+<section class="screen-pad">
+  <h1 class="greet-h" style="font-size:19px;">설정</h1>
+
+  <div class="section-label">화면</div>
+  <div class="card">
+    <div class="settings-row">
+      <span>테마</span>
+      <div class="theme-toggle" id="theme-toggle">
+        <button type="button" data-theme-value="light">라이트</button>
+        <button type="button" data-theme-value="dark">다크</button>
+        <button type="button" data-theme-value="system">시스템</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-label">계정</div>
+  <div class="card">
+    <div class="settings-row">
+      <span>현재 닉네임</span>
+      <span class="mono">{{ current_user.nickname }}</span>
+    </div>
+  </div>
+
+  <form class="card" id="nickname-form">
+    <label class="field-label">닉네임 변경
+      <div class="field-with-btn">
+        <input type="text" name="nickname" id="nickname-input" maxlength="12" placeholder="새 닉네임">
+        <button type="button" class="btn-check" id="nickname-check-btn">중복확인</button>
+      </div>
+      <span class="field-hint" id="nickname-change-hint"></span>
+    </label>
+    <button type="submit" class="btn-outline full" style="margin-top:10px;">변경 저장</button>
+  </form>
+
+  <form action="{{ url_for('logout') }}" method="post">
+    <button type="submit" class="btn-outline danger full">로그아웃</button>
+  </form>
+</section>
+<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+{% endblock %}
