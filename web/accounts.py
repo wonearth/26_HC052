@@ -1,20 +1,21 @@
-import sqlite3
-from pathlib import Path
+import os
 
+import libsql_client
 from werkzeug.security import check_password_hash, generate_password_hash
 
-DB_PATH = Path(__file__).with_name("users.db")
+DB_URL = os.environ.get("TURSO_DATABASE_URL", "file:users.db")
+DB_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_client():
+    if DB_AUTH_TOKEN:
+        return libsql_client.create_client_sync(url=DB_URL, auth_token=DB_AUTH_TOKEN)
+    return libsql_client.create_client_sync(url=DB_URL)
 
 
 def init_db():
-    with get_connection() as conn:
-        conn.execute(
+    with get_client() as client:
+        client.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,51 +27,56 @@ def init_db():
         )
 
 
+def _row_to_dict(rs, row):
+    return dict(zip(rs.columns, row))
+
+
 def nickname_exists(nickname, exclude_user_id=None):
-    with get_connection() as conn:
+    with get_client() as client:
         if exclude_user_id is None:
-            row = conn.execute(
-                "SELECT 1 FROM users WHERE nickname = ?", (nickname,)
-            ).fetchone()
+            rs = client.execute("SELECT 1 FROM users WHERE nickname = ?", [nickname])
         else:
-            row = conn.execute(
+            rs = client.execute(
                 "SELECT 1 FROM users WHERE nickname = ? AND id != ?",
-                (nickname, exclude_user_id),
-            ).fetchone()
-        return row is not None
+                [nickname, exclude_user_id],
+            )
+        return len(rs.rows) > 0
 
 
 def create_user(nickname, password):
     if nickname_exists(nickname):
         raise ValueError("이미 사용 중인 닉네임이에요.")
-    with get_connection() as conn:
-        cursor = conn.execute(
-            "INSERT INTO users (nickname, password_hash) VALUES (?, ?)",
-            (nickname, generate_password_hash(password)),
+    with get_client() as client:
+        rs = client.execute(
+            "INSERT INTO users (nickname, password_hash) VALUES (?, ?) RETURNING id",
+            [nickname, generate_password_hash(password)],
         )
-        return cursor.lastrowid
+        return rs.rows[0][0]
 
 
 def verify_user(nickname, password):
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM users WHERE nickname = ?", (nickname,)
-        ).fetchone()
-    if row is None or not check_password_hash(row["password_hash"], password):
+    with get_client() as client:
+        rs = client.execute("SELECT * FROM users WHERE nickname = ?", [nickname])
+    if len(rs.rows) == 0:
         return None
-    return dict(row)
+    user = _row_to_dict(rs, rs.rows[0])
+    if not check_password_hash(user["password_hash"], password):
+        return None
+    return user
 
 
 def get_user(user_id):
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
+    with get_client() as client:
+        rs = client.execute("SELECT * FROM users WHERE id = ?", [user_id])
+    if len(rs.rows) == 0:
+        return None
+    return _row_to_dict(rs, rs.rows[0])
 
 
 def update_nickname(user_id, new_nickname):
     if nickname_exists(new_nickname, exclude_user_id=user_id):
         raise ValueError("이미 사용 중인 닉네임이에요.")
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE users SET nickname = ? WHERE id = ?", (new_nickname, user_id)
+    with get_client() as client:
+        client.execute(
+            "UPDATE users SET nickname = ? WHERE id = ?", [new_nickname, user_id]
         )
