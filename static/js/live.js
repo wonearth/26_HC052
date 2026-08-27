@@ -8,6 +8,7 @@
   const riskT2 = riskBanner.querySelector(".t2");
   const eventsEl = document.getElementById("stat-events");
   const endBtn = document.getElementById("end-ride-btn");
+  const dangerFlash = document.getElementById("danger-flash");
 
   const startedAtIso = new Date().toISOString();
   const startTime = Date.now();
@@ -16,6 +17,34 @@
   let lastPosition = null;
   let lastRisk = "safe";
   let eventCount = 0;
+  let lastBeepTime = 0;
+
+  let audioCtx = null;
+  function unlockAudio() {
+    if (audioCtx) {
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      return;
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  document.addEventListener("touchstart", unlockAudio, { once: true });
+  document.addEventListener("click", unlockAudio, { once: true });
+
+  function playAlertBeep() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
 
   const points = [];
   const events = [];
@@ -103,6 +132,16 @@
       riskBanner.classList.add(data.risk);
       riskT1.textContent = data.title;
       riskT2.textContent = data.message;
+
+      if (data.risk === "danger") {
+        dangerFlash.classList.add("active");
+        if (Date.now() - lastBeepTime >= 3000) {
+          playAlertBeep();
+          lastBeepTime = Date.now();
+        }
+      } else {
+        dangerFlash.classList.remove("active");
+      }
 
       if (data.risk !== "safe" && lastRisk === "safe") {
         eventCount += 1;

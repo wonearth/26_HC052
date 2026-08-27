@@ -227,3 +227,17 @@ button { font-family: inherit; }
   70% { opacity: 0; transform: scale(2.1); }
   100% { opacity: 0; transform: scale(2.1); }
 }
+
+/* ---------- 실시간 주행: 위험 상태 화면 경고 ---------- */
+#danger-flash {
+  position: fixed; inset: 0; z-index: 80; pointer-events: none;
+  background: var(--danger); opacity: 0; display: none;
+}
+#danger-flash.active { display: block; animation: danger-pulse 1.1s ease-in-out infinite; }
+@keyframes danger-pulse {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #danger-flash.active { animation: none; opacity: 0.28; }
+}
