@@ -46,7 +46,7 @@ CLASS_INFO = {
 
 cv2.setNumThreads(1)
 app = Flask(__name__)
-WEB_APP_URL = os.environ.get("WEB_APP_URL", "/")
+WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://adaspm.vercel.app/")
 
 
 # =========================
@@ -672,8 +672,21 @@ def main():
 
     print("🚀 Flask 서버 시작! 브라우저에서 http://라즈베리파이IP:5000 접속")
 
+    cert_path, key_path = "cert.pem", "key.pem"
+    ssl_context = (
+        (cert_path, key_path)
+        if os.path.exists(cert_path) and os.path.exists(key_path)
+        else None
+    )
+    if ssl_context is None:
+        print(
+            "⚠️  cert.pem/key.pem이 없어서 HTTP로 실행합니다. "
+            "GPS는 브라우저 보안 정책상 HTTPS에서만 동작하니, "
+            "실제 라이딩에 쓰기 전에 자체서명 인증서를 만들어주세요."
+        )
+
     try:
-        app.run(host="0.0.0.0", port=5000, threaded=True)
+        app.run(host="0.0.0.0", port=5000, threaded=True, ssl_context=ssl_context)
     finally:
         if picam2 is not None:
             picam2.stop()
