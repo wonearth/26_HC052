@@ -14,12 +14,14 @@ from flask import (
 )
 
 import accounts
+import rides
 
 PI_LIVE_URL = os.environ.get("PI_LIVE_URL", "http://raspberrypi.local:5000/")
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 accounts.init_db()
+rides.init_db()
 
 
 @app.context_processor
