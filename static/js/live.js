@@ -74,4 +74,35 @@
     },
     { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
   );
+
+  const riskBanner = document.getElementById("risk-banner");
+  const riskT1 = riskBanner.querySelector(".t1");
+  const riskT2 = riskBanner.querySelector(".t2");
+  const eventsEl = document.getElementById("stat-events");
+  const riskLevels = ["safe", "caution", "warning", "danger"];
+  let eventCount = 0;
+  let lastRisk = "safe";
+
+  async function pollLiveState() {
+    try {
+      const res = await fetch("/api/live_state");
+      const data = await res.json();
+
+      riskBanner.classList.remove(...riskLevels);
+      riskBanner.classList.add(data.risk);
+      riskT1.textContent = data.title;
+      riskT2.textContent = data.message;
+
+      if (data.risk !== "safe" && lastRisk === "safe") {
+        eventCount += 1;
+        eventsEl.textContent = eventCount;
+      }
+      lastRisk = data.risk;
+    } catch (e) {
+      /* 다음 폴링에서 재시도 */
+    }
+  }
+
+  pollLiveState();
+  setInterval(pollLiveState, 1500);
 })();

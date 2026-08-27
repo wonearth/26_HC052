@@ -583,6 +583,19 @@ def change_nickname():
     return jsonify({"ok": True})
 
 
+@app.route("/api/live_state")
+@login_required
+def live_state():
+    # 실제 파이 감지 루프가 붙기 전까지 화면 흐름 확인용 목업 데이터
+    cycle = int(time.time()) % 30
+    if cycle < 18:
+        state = {"risk": "safe", "title": "현재 상태 · 안전", "message": "위험 요소가 감지되지 않았어요."}
+    elif cycle < 24:
+        state = {"risk": "caution", "title": "현재 상태 · 주의", "message": "전방 진행 경로 밖 보행자 감지 · 6.4m"}
+    else:
+        state = {"risk": "warning", "title": "현재 상태 · 경고", "message": "전방 진행 경로 내 보행자 접근 · TTC 2.1초"}
+    return jsonify(state)
+
 
 @app.route("/")
 @login_required
@@ -608,6 +621,11 @@ def live():
     return render_template("live.html")
 
 
+@app.route("/report")
+@login_required
+def report():
+    return render_template("report.html")
+
 
 @app.route("/settings")
 @login_required
@@ -617,6 +635,7 @@ def settings():
 
 
 @app.route("/video_feed")
+@login_required
 def video_feed():
     return Response(
         generate_frames(picam2, yolo_session, yolo_input_name, tracker),
