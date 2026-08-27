@@ -259,3 +259,85 @@ def get_ride_detail(ride_id, user_id):
         )
         ride["events"] = [dict(zip(evs.columns, r)) for r in evs.rows]
         return ride
+
+
+# =========================
+# 달력 / 날짜별 조회
+# =========================
+_RISK_RANK = {"safe": 0, "caution": 1, "warning": 2, "danger": 3}
+
+
+def get_latest_ride_date(user_id):
+    with get_client() as client:
+        rs = client.execute(
+            "SELECT date(started_at) FROM rides WHERE user_id = ? ORDER BY started_at DESC LIMIT 1",
+            [user_id],
+        )
+    if not rs.rows:
+        return None
+    return datetime.strptime(rs.rows[0][0], "%Y-%m-%d").date()
+
+
+def get_ride_days_for_month(user_id, year, month):
+    start = f"{year:04d}-{month:02d}-01"
+    end_year, end_month = (year + 1, 1) if month == 12 else (year, month + 1)
+    end = f"{end_year:04d}-{end_month:02d}-01"
+
+    with get_client() as client:
+        rs = client.execute(
+            "SELECT id, date(started_at) FROM rides "
+            "WHERE user_id = ? AND started_at >= ? AND started_at < ?",
+            [user_id, start, end],
+        )
+        date_by_ride = {row[0]: row[1] for row in rs.rows}
+        if not date_by_ride:
+            return {}
+
+        placeholders = ",".join("?" * len(date_by_ride))
+        ev = client.execute(
+            f"SELECT ride_id, risk_level FROM ride_events WHERE ride_id IN ({placeholders})",
+            list(date_by_ride.keys()),
+        )
+        worst_by_ride = {}
+        for ride_id, risk_level in ev.rows:
+            if _RISK_RANK.get(risk_level, 0) > _RISK_RANK.get(worst_by_ride.get(ride_id), -1):
+                worst_by_ride[ride_id] = risk_level
+
+    result = {}
+    for ride_id, date_str in date_by_ride.items():
+        risk = worst_by_ride.get(ride_id, "safe")
+        if _RISK_RANK[risk] > _RISK_RANK.get(result.get(date_str), -1):
+            result[date_str] = risk
+    return result
+
+
+def list_rides_for_date(user_id, date_str):
+    with get_client() as client:
+        rs = client.execute(
+            """
+            SELECT id, started_at, ended_at, distance_km, duration_sec, avg_speed_kmh, safety_score
+            FROM rides WHERE user_id = ? AND date(started_at) = ? ORDER BY started_at
+            """,
+            [user_id, date_str],
+        )
+        result = []
+        for ride_id, started_at, ended_at, distance_km, duration_sec, avg_speed_kmh, safety_score in rs.rows:
+            ev = client.execute(
+                "SELECT risk_level, COUNT(*) FROM ride_events WHERE ride_id = ? GROUP BY risk_level",
+                [ride_id],
+            )
+            counts = {r[0]: r[1] for r in ev.rows}
+            risk_level, count = _worst_risk(counts)
+            started = datetime.strptime(started_at, "%Y-%m-%d %H:%M:%S")
+            ended = datetime.strptime(ended_at, "%Y-%m-%d %H:%M:%S")
+            result.append({
+                "id": ride_id,
+                "time_range": f"{started:%H:%M}–{ended:%H:%M}",
+                "distance_km": round(distance_km, 1),
+                "duration_min": round(duration_sec / 60),
+                "avg_speed": round(avg_speed_kmh, 1),
+                "safety_score": safety_score,
+                "risk_level": risk_level,
+                "risk_label": _risk_label(risk_level, count),
+            })
+        return result

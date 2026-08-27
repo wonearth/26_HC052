@@ -1,3 +1,4 @@
+import calendar
 import os
 import secrets
 from datetime import datetime
@@ -266,13 +267,80 @@ def _build_report_context(ride):
     }
 
 
+_WEEKDAY_KOR = ["월", "화", "수", "목", "금", "토", "일"]
+
+
+def _shift_month(year, month, delta):
+    idx = year * 12 + (month - 1) + delta
+    return idx // 12, idx % 12 + 1
+
+
+def _build_calendar(year, month, ride_days, today_str, selected_date):
+    cal = calendar.Calendar(firstweekday=0)  # 월요일 시작
+    weeks = []
+    for week in cal.monthdayscalendar(year, month):
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(None)
+                continue
+            date_str = f"{year:04d}-{month:02d}-{day:02d}"
+            row.append({
+                "day": day,
+                "date": date_str,
+                "risk_level": ride_days.get(date_str),
+                "is_today": date_str == today_str,
+                "is_selected": date_str == selected_date,
+            })
+        weeks.append(row)
+    return weeks
+
+
+def _format_kr_date(date_str):
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    return f"{d.month}월 {d.day}일 ({_WEEKDAY_KOR[d.weekday()]})"
+
+
 @app.route("/report")
 @login_required
 def report():
-    latest_id = rides.get_latest_ride_id(session["user_id"])
-    if latest_id is None:
-        return render_template("report.html", ride=None)
-    return redirect(url_for("report_detail", ride_id=latest_id))
+    user_id = session["user_id"]
+    today = datetime.utcnow().date()
+
+    month_param = request.args.get("month")
+    if month_param:
+        try:
+            year, month = (int(p) for p in month_param.split("-"))
+        except ValueError:
+            year, month = today.year, today.month
+    else:
+        latest_date = rides.get_latest_ride_date(user_id)
+        year, month = (latest_date.year, latest_date.month) if latest_date else (today.year, today.month)
+
+    ride_days = rides.get_ride_days_for_month(user_id, year, month)
+
+    selected_date = request.args.get("date")
+    if selected_date is None:
+        if ride_days:
+            selected_date = max(ride_days.keys())
+        elif year == today.year and month == today.month:
+            selected_date = today.isoformat()
+
+    day_rides = rides.list_rides_for_date(user_id, selected_date) if selected_date else []
+    prev_year, prev_month = _shift_month(year, month, -1)
+    next_year, next_month = _shift_month(year, month, 1)
+
+    return render_template(
+        "report.html",
+        weeks=_build_calendar(year, month, ride_days, today.isoformat(), selected_date),
+        month_label=f"{year}년 {month}월",
+        current_month=f"{year:04d}-{month:02d}",
+        prev_month=f"{prev_year:04d}-{prev_month:02d}",
+        next_month=f"{next_year:04d}-{next_month:02d}",
+        selected_date=selected_date,
+        selected_date_label=_format_kr_date(selected_date) if selected_date else None,
+        day_rides=day_rides,
+    )
 
 
 @app.route("/report/<int:ride_id>")
@@ -280,8 +348,10 @@ def report():
 def report_detail(ride_id):
     ride = rides.get_ride_detail(ride_id, session["user_id"])
     if ride is None:
-        return render_template("report.html", ride=None), 404
-    return render_template("report.html", **_build_report_context(ride))
+        return render_template("report_detail.html", ride=None), 404
+    ctx = _build_report_context(ride)
+    ctx["back_date"] = ride["started_at"][:10]
+    return render_template("report_detail.html", **ctx)
 
 
 @app.route("/settings")

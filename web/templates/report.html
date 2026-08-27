@@ -2,68 +2,59 @@
 {% block title %}PM ADAS · 주행 리포트{% endblock %}
 {% block content %}
 <section class="screen-pad">
-{% if ride is none %}
-  <div>
-    <h1 class="greet-h" style="font-size:19px;">주행 리포트</h1>
-  </div>
+  <h1 class="greet-h" style="font-size:19px;">주행 리포트</h1>
+
   <div class="card">
-    <p style="margin:0; font-size:13.5px; color:var(--text-dim); line-height:1.6;">
-      아직 완료된 라이딩이 없어요. 라이딩을 마치면 여기에 경로와 위험 이벤트가 정리돼요.
-    </p>
-  </div>
-{% else %}
-  <div>
-    <div class="greet-dim">{{ date_label }}</div>
-    <h1 class="greet-h" style="font-size:19px;">라이딩 리포트</h1>
-  </div>
+    <div class="calendar-nav">
+      <a href="{{ url_for('report', month=prev_month) }}" aria-label="이전 달">
+        <svg class="icon" style="width:15px;height:15px" viewBox="0 0 24 24"><path d="M15 5 8 12l7 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+      <span class="month-label">{{ month_label }}</span>
+      <a href="{{ url_for('report', month=next_month) }}" aria-label="다음 달">
+        <svg class="icon" style="width:15px;height:15px" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </a>
+    </div>
 
-  <div class="map" style="height:150px;">
-    <svg viewBox="0 0 260 150">
-      {% for seg in route_segments %}
-      <path d="{{ seg.d }}" fill="none" stroke="var(--{{ seg.risk }})" stroke-width="4" stroke-linecap="round"/>
-      {% else %}
-      <text x="130" y="78" text-anchor="middle" fill="var(--text-dim)" font-size="11">경로 데이터가 부족해요</text>
+    <div class="calendar-weekdays">
+      <span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span><span>일</span>
+    </div>
+
+    <div class="calendar-grid">
+      {% for week in weeks %}
+        {% for cell in week %}
+          {% if cell is none %}
+          <span class="calendar-day empty"></span>
+          {% else %}
+          <a
+            href="{{ url_for('report', month=current_month, date=cell.date) }}"
+            class="calendar-day{% if cell.is_today %} today{% endif %}{% if cell.is_selected %} selected{% endif %}"
+          >
+            {{ cell.day }}
+            {% if cell.risk_level %}<span class="dot" style="background:var(--{{ cell.risk_level }})"></span>{% endif %}
+          </a>
+          {% endif %}
+        {% endfor %}
       {% endfor %}
-    </svg>
-  </div>
-  <div class="legend">
-    <span class="li"><span class="sw" style="background:var(--safe)"></span>안전</span>
-    <span class="li"><span class="sw" style="background:var(--caution)"></span>주의</span>
-    <span class="li"><span class="sw" style="background:var(--warning)"></span>경고</span>
-    <span class="li"><span class="sw" style="background:var(--danger)"></span>위험</span>
-  </div>
-
-  <div class="card ring-wrap">
-    <svg width="58" height="58" viewBox="0 0 58 58">
-      <circle cx="29" cy="29" r="24" fill="none" stroke="var(--line)" stroke-width="6"/>
-      <circle cx="29" cy="29" r="24" fill="none" stroke="var(--safe)" stroke-width="6" stroke-linecap="round"
-        stroke-dasharray="150.8" stroke-dashoffset="{{ 150.8 * (1 - (safety_score or 0) / 100) }}"
-        transform="rotate(-90 29 29)"/>
-    </svg>
-    <div>
-      <div class="ring-score">{{ safety_score if safety_score is not none else '-' }}<span style="font-size:14px;color:var(--text-dim);font-weight:500;">점</span></div>
-      <div class="ring-label">종합 안전점수</div>
     </div>
   </div>
 
-  <div class="grid2x2">
-    <div class="cell"><div class="v mono">{{ distance_km }}km</div><div class="l">총 거리</div></div>
-    <div class="cell"><div class="v mono">{{ duration_label }}</div><div class="l">이동 시간</div></div>
-    <div class="cell"><div class="v mono">{{ avg_speed_kmh }}km/h</div><div class="l">평균 속도</div></div>
-    <div class="cell"><div class="v mono" style="color:var(--danger)">{{ hard_brake_count }}회</div><div class="l">급정거</div></div>
-  </div>
-
-  <div class="section-label">위험 이벤트</div>
-  <div class="card" style="padding:2px 16px 4px;">
-    {% for e in events %}
-    <div class="sev-row">
-      <div class="sev-bar" style="background:var(--{{ e.risk_level }})"></div>
-      <div class="sev-body"><div class="time mono">{{ e.time }}</div><div class="desc">{{ e.desc }}</div></div>
-    </div>
+  {% if selected_date %}
+  <div class="section-label">{{ selected_date_label }}</div>
+  <div class="card" style="padding:0;">
+    {% for ride in day_rides %}
+    <a href="{{ url_for('report_detail', ride_id=ride.id) }}" class="day-ride-card">
+      <div class="row-between">
+        <div class="list-l">
+          <span class="t">{{ ride.time_range }} · {{ ride.distance_km }}km</span>
+          <span class="s">{{ ride.duration_min }}분 · 평균 {{ ride.avg_speed }}km/h · 안전점수 {{ ride.safety_score if ride.safety_score is not none else '-' }}점</span>
+        </div>
+        <span class="chip {{ ride.risk_level }}"><span class="d {{ ride.risk_level }}"></span>{{ ride.risk_label }}</span>
+      </div>
+    </a>
     {% else %}
-    <div class="sev-row"><div class="sev-body"><div class="desc">이번 라이딩에서는 위험 이벤트가 없었어요.</div></div></div>
+    <div class="day-ride-card"><span class="s">이 날은 라이딩 기록이 없어요.</span></div>
     {% endfor %}
   </div>
-{% endif %}
+  {% endif %}
 </section>
 {% endblock %}
