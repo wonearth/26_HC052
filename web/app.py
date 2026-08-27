@@ -1,6 +1,8 @@
 import os
 import secrets
+from datetime import datetime
 from functools import wraps
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import (
     Flask,
@@ -12,21 +14,45 @@ from flask import (
     session,
     url_for,
 )
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 import accounts
 import rides
 
 PI_LIVE_URL = os.environ.get("PI_LIVE_URL", "http://raspberrypi.local:5000/")
+RIDE_TOKEN_MAX_AGE = 6 * 3600  # 토큰 유효시간(초) — 라이딩 하나가 이보다 길면 만료됨
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
 accounts.init_db()
 rides.init_db()
 
+_ride_token_serializer = URLSafeTimedSerializer(app.secret_key, salt="pm-adas-ride-token")
 
-@app.context_processor
-def inject_pi_live_url():
-    return {"pi_live_url": PI_LIVE_URL}
+
+def make_ride_token(user_id):
+    return _ride_token_serializer.dumps({"user_id": user_id})
+
+
+def verify_ride_token(token):
+    try:
+        data = _ride_token_serializer.loads(token, max_age=RIDE_TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return None
+    return data.get("user_id")
+
+
+def _pi_url_with_token(token):
+    parts = urlsplit(PI_LIVE_URL)
+    query = dict(parse_qsl(parts.query))
+    query["token"] = token
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _with_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
 
 
 def login_required(view):
@@ -106,25 +132,156 @@ def change_nickname():
 @app.route("/")
 @login_required
 def home():
-    weekly = {"distance_km": 12.4, "count": 4, "avg_score": 88}
-    streak_days = 3
-    recent_rides = [
-        {"date": "8월 25일", "distance_km": 5.2, "duration_min": 22, "avg_speed": 14.1,
-         "risk_label": "주의 1회", "risk_level": "caution"},
-        {"date": "8월 23일", "distance_km": 3.8, "duration_min": 17, "avg_speed": 13.4,
-         "risk_label": "위험 1회", "risk_level": "danger"},
-    ]
-    current_user = accounts.get_user(session["user_id"])
+    user_id = session["user_id"]
+    weekly = rides.weekly_summary(user_id)
+    current_user = accounts.get_user(user_id)
     return render_template(
-        "home.html", weekly=weekly, streak_days=streak_days, recent_rides=recent_rides,
+        "home.html",
+        weekly=weekly,
+        streak_days=rides.streak_days(user_id),
+        recent_rides=rides.list_recent_rides(user_id),
         current_user=current_user,
     )
+
+
+@app.route("/start-ride")
+@login_required
+def start_ride():
+    token = make_ride_token(session["user_id"])
+    return redirect(_pi_url_with_token(token))
+
+
+SAFETY_PENALTY = {"danger": 15, "warning": 8, "caution": 3}
+
+
+def _compute_safety_score(events):
+    penalty = sum(SAFETY_PENALTY.get(e.get("risk_level"), 0) for e in events)
+    return max(0, 100 - penalty)
+
+
+@app.route("/api/rides", methods=["POST", "OPTIONS"])
+def save_ride():
+    if request.method == "OPTIONS":
+        resp = jsonify({})
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return _with_cors(resp)
+
+    data = request.get_json(silent=True) or {}
+    user_id = verify_ride_token(data.get("token", ""))
+    if user_id is None:
+        resp = jsonify({"error": "라이딩 토큰이 유효하지 않아요."})
+        resp.status_code = 401
+        return _with_cors(resp)
+
+    points = data.get("points") or []
+    events = data.get("events") or []
+
+    ride_id = rides.create_ride(
+        user_id=user_id,
+        started_at=data.get("started_at"),
+        ended_at=data.get("ended_at"),
+        distance_km=float(data.get("distance_km") or 0),
+        duration_sec=int(data.get("duration_sec") or 0),
+        avg_speed_kmh=float(data.get("avg_speed_kmh") or 0),
+        hard_brake_count=int(data.get("hard_brake_count") or 0),
+        safety_score=_compute_safety_score(events),
+    )
+    rides.add_points(ride_id, points)
+    rides.add_events(ride_id, events)
+
+    return _with_cors(jsonify({"ok": True, "ride_id": ride_id}))
+
+
+_ZONE_KOR = {True: "진행 경로 내", False: "진행 경로 밖"}
+
+
+def _describe_event(e):
+    zone = _ZONE_KOR.get(bool(e.get("in_collision_zone")), "진행 경로 밖")
+    cls = e.get("object_class") or "객체"
+    ttc = e.get("ttc_sec")
+    distance = e.get("distance_m")
+    if ttc is not None and distance is not None:
+        return f"전방 {zone} {cls} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
+    if distance is not None:
+        return f"전방 {zone} {cls} 감지 · {distance:.1f}m"
+    return f"전방 {zone} {cls} 감지"
+
+
+def _build_route_segments(points, width=260, height=150, pad=14):
+    if len(points) < 2:
+        return []
+    lats = [p["lat"] for p in points]
+    lngs = [p["lng"] for p in points]
+    lat_span = max(max(lats) - min(lats), 1e-6)
+    lng_span = max(max(lngs) - min(lngs), 1e-6)
+    min_lat, min_lng = min(lats), min(lngs)
+
+    def project(p):
+        x = pad + (p["lng"] - min_lng) / lng_span * (width - 2 * pad)
+        y = height - pad - (p["lat"] - min_lat) / lat_span * (height - 2 * pad)
+        return x, y
+
+    segments = []
+    current_risk = points[0]["risk_level"]
+    current_pts = [project(points[0])]
+    for p in points[1:]:
+        pt = project(p)
+        current_pts.append(pt)
+        if p["risk_level"] != current_risk:
+            segments.append({"risk": current_risk, "points": current_pts})
+            current_risk = p["risk_level"]
+            current_pts = [pt]
+    segments.append({"risk": current_risk, "points": current_pts})
+
+    for seg in segments:
+        seg["d"] = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in seg["points"])
+    return segments
+
+
+def _build_report_context(ride):
+    started = datetime.strptime(ride["started_at"], "%Y-%m-%d %H:%M:%S")
+    ended = datetime.strptime(ride["ended_at"], "%Y-%m-%d %H:%M:%S")
+    duration_sec = ride["duration_sec"]
+
+    events_ctx = [
+        {
+            "time": datetime.strptime(e["occurred_at"], "%Y-%m-%d %H:%M:%S").strftime("%H:%M:%S"),
+            "risk_level": e["risk_level"],
+            "desc": _describe_event(e),
+        }
+        for e in ride["events"]
+    ]
+
+    return {
+        "ride": ride,
+        "date_label": f"{started.month}월 {started.day}일 · {started:%H:%M}–{ended:%H:%M}",
+        "route_segments": _build_route_segments(ride["points"]),
+        "distance_km": round(ride["distance_km"], 1),
+        "duration_label": f"{duration_sec // 60:02d}:{duration_sec % 60:02d}",
+        "avg_speed_kmh": round(ride["avg_speed_kmh"], 1),
+        "hard_brake_count": ride["hard_brake_count"],
+        "safety_score": ride["safety_score"],
+        "events": events_ctx,
+    }
 
 
 @app.route("/report")
 @login_required
 def report():
-    return render_template("report.html")
+    latest_id = rides.get_latest_ride_id(session["user_id"])
+    if latest_id is None:
+        return render_template("report.html", ride=None)
+    return redirect(url_for("report_detail", ride_id=latest_id))
+
+
+@app.route("/report/<int:ride_id>")
+@login_required
+def report_detail(ride_id):
+    ride = rides.get_ride_detail(ride_id, session["user_id"])
+    if ride is None:
+        return render_template("report.html", ride=None), 404
+    return render_template("report.html", **_build_report_context(ride))
 
 
 @app.route("/settings")

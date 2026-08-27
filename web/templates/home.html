@@ -5,7 +5,7 @@
   <div class="greet-dim">안녕하세요, {{ current_user.nickname }}님</div>
   <h1 class="greet-h">오늘도 안전하게<br>달려볼까요?</h1>
 
-  <a href="{{ pi_live_url }}" class="btn-primary">
+  <a href="{{ url_for('start_ride') }}" class="btn-primary">
     <svg class="icon" viewBox="0 0 24 24"><polygon points="7,5 19,12 7,19" stroke-linejoin="round"/></svg>
     라이딩 시작
   </a>
@@ -21,20 +21,22 @@
     <div class="stat-row">
       <div class="stat-col"><div class="stat-v mono">{{ weekly.distance_km }}<span class="unit">km</span></div><div class="stat-l">총 거리</div></div>
       <div class="stat-col"><div class="stat-v mono">{{ weekly.count }}<span class="unit">회</span></div><div class="stat-l">주행 횟수</div></div>
-      <div class="stat-col"><div class="stat-v mono safe">{{ weekly.avg_score }}</div><div class="stat-l">평균 안전점수</div></div>
+      <div class="stat-col"><div class="stat-v mono safe">{{ weekly.avg_score if weekly.avg_score is not none else '-' }}</div><div class="stat-l">평균 안전점수</div></div>
     </div>
   </div>
 
   <div class="section-label">최근 라이딩</div>
   <div class="card list-card">
     {% for ride in recent_rides %}
-    <div class="list-row">
+    <a href="{{ url_for('report_detail', ride_id=ride.id) }}" class="list-row">
       <div class="list-l">
         <span class="t">{{ ride.date }} · {{ ride.distance_km }}km</span>
         <span class="s">{{ ride.duration_min }}분 · 평균 {{ ride.avg_speed }}km/h</span>
       </div>
       <span class="chip {{ ride.risk_level }}"><span class="d {{ ride.risk_level }}"></span>{{ ride.risk_label }}</span>
-    </div>
+    </a>
+    {% else %}
+    <div class="list-row"><span class="s">아직 라이딩 기록이 없어요. 첫 라이딩을 시작해보세요.</span></div>
     {% endfor %}
   </div>
 </section>
