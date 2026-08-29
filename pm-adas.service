@@ -1,0 +1,28 @@
+# 설치 방법 (파이에서, SSH로 접속한 뒤):
+#   sudo cp pm-adas.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pm-adas
+#
+# 상태 확인: sudo systemctl status pm-adas
+# 로그 확인: journalctl -u pm-adas -f
+#
+# User / WorkingDirectory / ExecStart 경로는 실제 파이 사용자명과
+# 프로젝트 위치에 맞게 바꿔야 한다 (기본 Raspberry Pi OS 사용자는 보통 "pi").
+
+[Unit]
+Description=PM ADAS - 실시간 감지 서버
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/AdasPM
+ExecStart=/usr/bin/python3 /home/pi/AdasPM/app.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

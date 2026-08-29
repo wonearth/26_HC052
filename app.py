@@ -20,6 +20,8 @@ YOLO_SIZE = 320
 CONF_THRESHOLD = 0.20
 NMS_THRESHOLD = 0.45
 FRAME_SKIP = 2
+MAX_CAMERA_FAILURES = 10   # 연속 실패 시 '카메라 끊김'으로 상태 전환
+LOW_LIGHT_THRESHOLD = 80   # 평균 밝기(0~255) 이하면 저조도 보정 적용
 
 FOCAL_LENGTH = 524.0       # Camera Module 3 임시값, 추후 실제 캘리브레이션
 MAX_LOST_FRAMES = 5        # 객체를 잠깐 놓쳐도 ID 유지
@@ -316,6 +318,29 @@ def get_live_state():
         return dict(_live_state)
 
 
+def mark_camera_offline():
+    with _state_lock:
+        _live_state["risk"] = "warning"
+        _live_state["title"] = "카메라 연결 끊김"
+        _live_state["message"] = "카메라 입력이 없어 위험 감지가 중단됐어요. 점검이 필요해요."
+        _live_state["class_name"] = None
+        _live_state["distance_m"] = None
+        _live_state["ttc_sec"] = None
+        _live_state["in_collision_zone"] = False
+
+
+def enhance_low_light(frame_bgr):
+    """평균 밝기가 낮으면 CLAHE로 명암 대비를 높여 야간 탐지를 보조한다."""
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    if gray.mean() >= LOW_LIGHT_THRESHOLD:
+        return frame_bgr
+    lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    l_channel = clahe.apply(l_channel)
+    return cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+
+
 # =========================
 # 실시간 영상 처리 (백그라운드 스레드에서 계속 실행)
 # =========================
@@ -323,6 +348,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
     global _latest_jpeg
 
     frame_count = 0
+    camera_failure_count = 0
     last_online_targets = []
 
     while True:
@@ -330,13 +356,18 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
 
         frame = picam2.capture_array("main")  # Camera Module 3 실시간 입력
         if frame is None:
-            print("❌ 카메라 프레임 없음")
+            camera_failure_count += 1
+            print(f"❌ 카메라 프레임 없음 ({camera_failure_count}회 연속)")
+            if camera_failure_count >= MAX_CAMERA_FAILURES:
+                mark_camera_offline()
+            time.sleep(0.1)
             continue
+        camera_failure_count = 0
 
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         frame_count += 1
         h_orig, w_orig = frame.shape[:2]
-        raw_frame = frame.copy()
+        raw_frame = enhance_low_light(frame.copy())  # 어두우면 명암 대비 보정
         display_frame = raw_frame.copy()  # 기존 도로 탐지 제거
 
         # =========================
