@@ -46,8 +46,7 @@ export default function RideScreen({ route, navigation }: Props) {
     try {
       await ensureConnected();
       setPhase("receiving");
-      await bleService.sendStop();
-      const payload = await bleService.receiveRideData();
+      const payload = await bleService.stopRideAndReceiveData();
       const rideId = await saveRide(payload);
       navigation.replace("RideDetail", { rideId });
     } catch (e) {

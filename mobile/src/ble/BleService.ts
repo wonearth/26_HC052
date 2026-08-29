@@ -78,10 +78,6 @@ export class BleService {
     await this.writeControl(0x01);
   }
 
-  async sendStop(): Promise<void> {
-    await this.writeControl(0x02);
-  }
-
   private async writeControl(command: number): Promise<void> {
     const device = this.requireDevice();
     const value = base64Encode(new Uint8Array([command]));
@@ -109,11 +105,16 @@ export class BleService {
   }
 
   /**
-   * 종료 신호를 보낸 뒤 호출. 청크를 모아 하나의 RidePayload로 재조립해 반환한다.
-   * 일정 시간 안에 다음 청크가 안 오면 RideDataStalledError를 던짐 —
-   * 호출부에서 sendStop()을 다시 불러 재전송을 요청하면 됨 (BLE_PROTOCOL.md §2-3).
+   * 종료 신호를 보내고 청크를 모아 하나의 RidePayload로 재조립해 반환한다.
+   *
+   * 중요: 알림 구독을 먼저 걸어둔 "다음에" 종료 신호를 보내야 한다. 순서가 반대면
+   * 파이가 구독이 채 걸리기도 전에 알림을 다 쏴버려서 앱이 못 받는 경쟁 상태(race
+   * condition)가 생긴다 — 처음 구현에서 실제로 이 버그로 종료가 계속 실패했었음.
+   *
+   * 일정 시간 안에 다음 청크가 안 오면 RideDataStalledError를 던짐 — 호출부에서
+   * 이 함수를 다시 부르면 재구독+재종료신호로 재시도된다 (BLE_PROTOCOL.md §2-3).
    */
-  async receiveRideData(): Promise<RidePayload> {
+  async stopRideAndReceiveData(): Promise<RidePayload> {
     const device = this.requireDevice();
 
     return new Promise<RidePayload>((resolve, reject) => {
@@ -169,6 +170,12 @@ export class BleService {
       );
 
       resetTimeout();
+
+      // 구독이 걸린 다음에만 종료 신호를 보낸다 (위 주석 참고)
+      this.writeControl(0x02).catch((err) => {
+        cleanup();
+        reject(err);
+      });
     });
   }
 

@@ -3,7 +3,7 @@ import { View, ActivityIndicator } from "react-native";
 import { NavigationContainer, DarkTheme, type Theme } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { StatusBar } from "expo-status-bar";
-import HistoryScreen from "./src/screens/HistoryScreen";
+import MainTabs from "./src/navigation/MainTabs";
 import ScanScreen from "./src/screens/ScanScreen";
 import RideScreen from "./src/screens/RideScreen";
 import RideDetailScreen from "./src/screens/RideDetailScreen";
@@ -49,7 +49,7 @@ export default function App() {
           headerTintColor: colors.text,
         }}
       >
-        <Stack.Screen name="History" component={HistoryScreen} options={{ headerShown: false }} />
+        <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
         <Stack.Screen name="Scan" component={ScanScreen} options={{ title: "QR 스캔" }} />
         <Stack.Screen name="Ride" component={RideScreen} options={{ title: "주행 중", headerBackVisible: false }} />
         <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: "라이딩 상세" }} />

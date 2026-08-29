@@ -147,3 +147,75 @@ export async function getRideDetail(
 
   return { summary, points, events };
 }
+
+const RISK_RANK: Record<string, number> = { 안전: 0, 주의: 1, 경고: 2, 위험: 3 };
+const RANK_TO_RISK = ["안전", "주의", "경고", "위험"];
+
+export interface RideDaySummary {
+  date: string; // YYYY-MM-DD
+  riskLevel: string;
+  rideCount: number;
+}
+
+/** yearMonth: "YYYY-MM". 그 달에 라이딩이 있었던 날짜와 그날의 최악 위험도를 반환. */
+export async function getRideDaysForMonth(yearMonth: string): Promise<RideDaySummary[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ day: string; risk_level: string | null; ride_count: number }>(
+    `SELECT date(r.started_at) AS day,
+            re.risk_level AS risk_level,
+            COUNT(DISTINCT r.id) AS ride_count
+     FROM rides r
+     LEFT JOIN ride_events re ON re.ride_id = r.id
+     WHERE strftime('%Y-%m', r.started_at) = ?
+     GROUP BY day, re.risk_level`,
+    [yearMonth]
+  );
+
+  const byDay = new Map<string, { rank: number; rideCount: number }>();
+  for (const row of rows) {
+    const rank = row.risk_level ? RISK_RANK[row.risk_level] ?? 0 : 0;
+    const existing = byDay.get(row.day);
+    if (!existing || rank > existing.rank) {
+      byDay.set(row.day, { rank, rideCount: (existing?.rideCount ?? 0) + row.ride_count });
+    } else {
+      existing.rideCount += row.ride_count;
+    }
+  }
+
+  return [...byDay.entries()].map(([date, v]) => ({
+    date,
+    riskLevel: RANK_TO_RISK[v.rank],
+    rideCount: v.rideCount,
+  }));
+}
+
+export async function listRidesForDate(date: string): Promise<RideSummary[]> {
+  const db = await getDb();
+  return db.getAllAsync<RideSummary>(
+    `SELECT id, client_ride_uuid, started_at, ended_at, distance_km, duration_sec,
+            avg_speed_kmh, max_speed_kmh, hard_brake_count, safety_score
+     FROM rides WHERE date(started_at) = ? ORDER BY started_at DESC`,
+    [date]
+  );
+}
+
+export interface SummaryStats {
+  rideCount: number;
+  totalDistanceKm: number;
+  avgSafetyScore: number;
+}
+
+export async function getSummaryStats(): Promise<SummaryStats> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ ride_count: number; total_km: number; avg_score: number }>(
+    `SELECT COUNT(*) AS ride_count,
+            COALESCE(SUM(distance_km), 0) AS total_km,
+            COALESCE(AVG(safety_score), 0) AS avg_score
+     FROM rides`
+  );
+  return {
+    rideCount: row?.ride_count ?? 0,
+    totalDistanceKm: row?.total_km ?? 0,
+    avgSafetyScore: Math.round(row?.avg_score ?? 0),
+  };
+}

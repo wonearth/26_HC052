@@ -6,8 +6,7 @@
 # 상태 확인: sudo systemctl status pm-adas
 # 로그 확인: journalctl -u pm-adas -f
 #
-# User / WorkingDirectory / ExecStart 경로는 실제 파이 사용자명과
-# 프로젝트 위치에 맞게 바꿔야 한다 (기본 Raspberry Pi OS 사용자는 보통 "pi").
+# User / WorkingDirectory / ExecStart 경로는 이 파이의 실제 계정(yeonwoo) 기준으로 맞춰둠.
 
 [Unit]
 Description=PM ADAS - 실시간 감지 서버
@@ -16,9 +15,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/AdasPM
-ExecStart=/usr/bin/python3 /home/pi/AdasPM/app.py
+User=yeonwoo
+WorkingDirectory=/home/yeonwoo/AdasPM
+ExecStart=/usr/bin/python3 /home/yeonwoo/AdasPM/app.py
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal
