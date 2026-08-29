@@ -1,7 +1,7 @@
 (function () {
   const toggle = document.getElementById("theme-toggle");
   const buttons = toggle.querySelectorAll("button");
-  const current = localStorage.getItem("pmadas-theme") || "system";
+  const current = localStorage.getItem("pmadas-theme") || "dark"; // 기본값: 다크
 
   function applyActive(value) {
     buttons.forEach((b) => b.classList.toggle("active", b.dataset.themeValue === value));

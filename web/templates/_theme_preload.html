@@ -1,7 +1,7 @@
 <script>
 (function () {
   try {
-    var t = localStorage.getItem("pmadas-theme");
+    var t = localStorage.getItem("pmadas-theme") || "dark"; // 기본값: 다크
     if (t === "dark" || t === "light") {
       document.documentElement.setAttribute("data-theme", t);
     }
