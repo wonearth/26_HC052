@@ -13,6 +13,9 @@ from flask import Flask, Response, render_template, jsonify, request
 from collections import deque
 from picamera2 import Picamera2
 
+import gps_reader
+import ble_peripheral
+
 # =========================
 # 설정값
 # =========================
@@ -700,6 +703,21 @@ def main():
     )
     detection_thread.start()
     print("4. 감지 스레드 시작!")
+
+    gps_thread = threading.Thread(target=gps_reader.gps_reader_loop, daemon=True)
+    gps_thread.start()
+    print("5. GPS 리더 스레드 시작!")
+
+    try:
+        ble_server = ble_peripheral.BlePeripheralServer(
+            live_state_getter=get_live_state,
+            gps_getter=gps_reader.get_current_position,
+        )
+        ble_thread = threading.Thread(target=ble_server.start, daemon=True)
+        ble_thread.start()
+        print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결)")
+    except Exception as e:
+        print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
 
     print("🚀 Flask 서버 시작! 브라우저에서 http://라즈베리파이IP:5000 접속")
 
