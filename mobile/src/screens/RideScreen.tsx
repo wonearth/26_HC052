@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from "react-native";
+import * as Location from "expo-location";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/types";
 import { bleService, RideDataStalledError, type LiveStatus } from "../ble/BleService";
@@ -16,24 +17,76 @@ export default function RideScreen({ route, navigation }: Props) {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const liveStatusSubscriptionRef = useRef<{ remove: () => void } | null>(null);
+
+  const stopPhoneGps = useCallback(() => {
+    locationSubscriptionRef.current?.remove();
+    locationSubscriptionRef.current = null;
+  }, []);
+
+  const startPhoneGps = useCallback(async () => {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== "granted") {
+      throw new Error("휴대폰 위치 권한이 필요합니다.");
+    }
+
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    if (!servicesEnabled) {
+      throw new Error("휴대폰의 위치(GPS) 기능을 켜주세요.");
+    }
+
+    stopPhoneGps();
+
+    locationSubscriptionRef.current = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.High,
+        timeInterval: 1000,
+        distanceInterval: 1,
+      },
+      (location) => {
+        const { latitude, longitude, speed } = location.coords;
+        const speedKmh = speed != null && speed >= 0 ? speed * 3.6 : 0;
+
+        bleService
+          .sendPhoneGps(latitude, longitude, speedKmh)
+          .catch((error) => console.log("⚠️ PHONE GPS BLE 전송 실패:", error));
+      }
+    );
+  }, [stopPhoneGps]);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      stopPhoneGps();
+      liveStatusSubscriptionRef.current?.remove();
     };
-  }, []);
+  }, [stopPhoneGps]);
 
   const handleStart = useCallback(async () => {
     try {
-      await bleService.sendStart();
+      // 먼저 위치 권한/GPS 상태를 확인한다. 실패하면 Pi 주행도 시작하지 않는다.
+      await startPhoneGps();
+
+      try {
+        await bleService.sendStart();
+      } catch (error) {
+        stopPhoneGps();
+        throw error;
+      }
+
       setPhase("riding");
       setElapsedSec(0);
+
+      if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
-      bleService.subscribeLiveStatus(setLiveStatus);
+
+      liveStatusSubscriptionRef.current?.remove();
+      liveStatusSubscriptionRef.current = bleService.subscribeLiveStatus(setLiveStatus);
     } catch (e) {
       Alert.alert("시작 실패", e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [startPhoneGps, stopPhoneGps]);
 
   const ensureConnected = useCallback(async () => {
     if (bleService.isConnected()) return;
@@ -42,23 +95,41 @@ export default function RideScreen({ route, navigation }: Props) {
   }, [mac]);
 
   const handleStop = useCallback(async () => {
-    if (timerRef.current) clearInterval(timerRef.current);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    // STOP 직전까지의 위치는 이미 Pi로 전달되어 있으므로 추적을 종료한다.
+    stopPhoneGps();
+
     try {
       await ensureConnected();
       setPhase("receiving");
       const payload = await bleService.stopRideAndReceiveData();
+      liveStatusSubscriptionRef.current?.remove();
+      liveStatusSubscriptionRef.current = null;
       const rideId = await saveRide(payload);
       navigation.replace("RideDetail", { rideId });
     } catch (e) {
       if (e instanceof RideDataStalledError) {
         Alert.alert("전송 중단", "주행기록 수신이 끊겼습니다. 종료를 다시 눌러 재시도해주세요.");
         setPhase("riding");
+
+        // 주행 종료가 확정되지 않았으므로 GPS 추적을 다시 시작한다.
+        startPhoneGps().catch((error) =>
+          Alert.alert("GPS 재시작 실패", error instanceof Error ? error.message : String(error))
+        );
         return;
       }
+
       Alert.alert("종료 실패", e instanceof Error ? e.message : String(e));
       setPhase("riding");
+      startPhoneGps().catch((error) =>
+        Alert.alert("GPS 재시작 실패", error instanceof Error ? error.message : String(error))
+      );
     }
-  }, [ensureConnected, navigation]);
+  }, [ensureConnected, navigation, startPhoneGps, stopPhoneGps]);
 
   const riskIndex = liveStatus?.riskLevel ?? 0;
   const riskLabel = RISK_LEVEL_BY_CODE[riskIndex] ?? "안전";

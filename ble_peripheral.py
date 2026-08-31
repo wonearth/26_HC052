@@ -31,6 +31,7 @@ SERVICE_UUID = "b4ecbebf-e498-4421-9b90-830fdef8c16a"
 CHAR_CONTROL_UUID = "8ea73ee0-6fbd-4a5b-a121-e249ba53033a"
 CHAR_LIVE_STATUS_UUID = "0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e"
 CHAR_RIDE_DATA_UUID = "10a90785-c204-4b26-aeac-56f0336b9f14"
+CHAR_PHONE_GPS_UUID = "7d2f4b8e-1a63-4c91-9e52-6b7f3d8a2041"
 
 CONTROL_START = 0x01
 CONTROL_STOP = 0x02
@@ -188,9 +189,18 @@ class BlePeripheralServer:
         self._periph = None
         self._sample_thread = None
         self._stop_sampling = threading.Event()
+        self._phone_gps_lock = threading.Lock()
+        self._phone_gps = {
+            "lat": None,
+            "lng": None,
+            "speed_kmh": 0.0,
+            "fix": False,
+            "updated_at": None,
+        }
 
     def _on_control_write(self, value, options=None):
         command = value[0] if value else None
+        print(f"🔵 CONTROL WRITE 수신: value={value}, command={command}", flush=True)
         if command == CONTROL_START:
             print("▶️  BLE: 주행 시작 신호 수신")
             self._session.start()
@@ -204,6 +214,39 @@ class BlePeripheralServer:
             else:
                 print("⚠️  종료 신호를 받았지만 진행 중이던 라이딩이 없습니다 (재전송 요청일 수 있음)")
 
+    def _on_phone_gps_write(self, value, options=None):
+        """앱에서 BLE로 전달한 최신 스마트폰 GPS 값을 저장한다."""
+        try:
+            raw = bytes(value).decode("utf-8")
+            data = json.loads(raw)
+            lat = data.get("lat")
+            lng = data.get("lng")
+            speed_kmh = data.get("speed_kmh", 0.0)
+
+            if lat is None or lng is None:
+                return
+
+            with self._phone_gps_lock:
+                self._phone_gps = {
+                    "lat": float(lat),
+                    "lng": float(lng),
+                    "speed_kmh": max(0.0, float(speed_kmh or 0.0)),
+                    "fix": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+            print(
+                f"📱 PHONE GPS: lat={float(lat):.6f}, "
+                f"lng={float(lng):.6f}, speed={float(speed_kmh or 0.0):.1f} km/h",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"⚠️ 폰 GPS BLE 데이터 처리 실패: {e}", flush=True)
+
+    def _get_phone_gps(self):
+        with self._phone_gps_lock:
+            return dict(self._phone_gps)
+
     def _start_sampling(self):
         self._stop_sampling.clear()
         self._sample_thread = threading.Thread(target=self._sampling_loop, daemon=True)
@@ -216,7 +259,7 @@ class BlePeripheralServer:
 
     def _sampling_loop(self):
         while not self._stop_sampling.is_set() and self._session.is_active():
-            gps = self._gps_getter() or {}
+            gps = self._get_phone_gps()
             state = self._live_state_getter() or {}
             risk_key = state.get("risk", "safe")
 
@@ -271,7 +314,7 @@ class BlePeripheralServer:
         self._periph.add_characteristic(
             srv_id=1, chr_id=1, uuid=CHAR_CONTROL_UUID,
             value=[], notifying=False,
-            flags=["write"],
+            flags=["write-without-response"],
             write_callback=self._on_control_write,
         )
         self._periph.add_characteristic(
@@ -283,6 +326,12 @@ class BlePeripheralServer:
             srv_id=1, chr_id=3, uuid=CHAR_RIDE_DATA_UUID,
             value=[], notifying=False,
             flags=["notify"],
+        )
+        self._periph.add_characteristic(
+            srv_id=1, chr_id=4, uuid=CHAR_PHONE_GPS_UUID,
+            value=[], notifying=False,
+            flags=["write-without-response"],
+            write_callback=self._on_phone_gps_write,
         )
 
         print(f"📡 BLE 주변장치 시작: {self._local_name} ({adapter_address})")

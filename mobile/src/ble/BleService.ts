@@ -4,19 +4,19 @@ import { base64Decode, base64Encode } from "./base64";
 import {
   CHARACTERISTIC_CONTROL,
   CHARACTERISTIC_LIVE_STATUS,
+  CHARACTERISTIC_PHONE_GPS,
   CHARACTERISTIC_RIDE_DATA,
   SERVICE_UUID,
 } from "./protocol";
 import type { RidePayload } from "../types/ride";
 
 export interface LiveStatus {
-  riskLevel: number; // 0~3, BLE_PROTOCOL.md 참고
-  eventFlag: number; // 0 or 1
+  riskLevel: number;
+  eventFlag: number;
 }
 
 const RIDE_DATA_CHUNK_TIMEOUT_MS = 5000;
 
-/** 재조립 도중 청크가 끊기면 던진다. 호출부는 종료 신호를 다시 보내 재시도하면 됨. */
 export class RideDataStalledError extends Error {
   constructor() {
     super("주행기록 수신이 중간에 멈췄습니다 (청크 유실 가능성)");
@@ -53,10 +53,19 @@ export class BleService {
     return this.device?.id ?? null;
   }
 
-  /** QR에서 얻은 MAC 주소로 바로 연결 — 이름 스캔 없이 특정 파이 하나만 정확히 지정 */
   async connectByMac(mac: string): Promise<void> {
     const device = await this.manager.connectToDevice(mac, { timeout: 10000 });
     await device.discoverAllServicesAndCharacteristics();
+
+    const chars = await device.characteristicsForService(SERVICE_UUID);
+    chars.forEach((c) => {
+      console.log("===== CHARACTERISTIC =====");
+      console.log("UUID:", c.uuid);
+      console.log("isWritableWithResponse:", c.isWritableWithResponse);
+      console.log("isWritableWithoutResponse:", c.isWritableWithoutResponse);
+      console.log("isNotifiable:", c.isNotifiable);
+    });
+
     this.device = device;
     device.onDisconnected(() => {
       if (this.device?.id === device.id) this.device = null;
@@ -78,15 +87,47 @@ export class BleService {
     await this.writeControl(0x01);
   }
 
-  private async writeControl(command: number): Promise<void> {
+  async sendPhoneGps(lat: number, lng: number, speedKmh: number): Promise<void> {
     const device = this.requireDevice();
-    const value = base64Encode(new Uint8Array([command]));
-    await this.manager.writeCharacteristicWithResponseForDevice(
+    const json = JSON.stringify({
+      lat,
+      lng,
+      speed_kmh: Math.max(0, speedKmh),
+    });
+    const bytes = new TextEncoder().encode(json);
+    const value = base64Encode(bytes);
+
+    await this.manager.writeCharacteristicWithoutResponseForDevice(
       device.id,
       SERVICE_UUID,
-      CHARACTERISTIC_CONTROL,
+      CHARACTERISTIC_PHONE_GPS,
       value
     );
+  }
+
+  private async writeControl(command: number): Promise<void> {
+    const device = this.requireDevice();
+
+    console.log("🔵 BLE CONTROL 전송 시작");
+    console.log("device.id =", device.id);
+    console.log("SERVICE_UUID =", SERVICE_UUID);
+    console.log("CONTROL_UUID =", CHARACTERISTIC_CONTROL);
+    console.log("command =", command);
+
+    const value = base64Encode(new Uint8Array([command]));
+
+    try {
+      await this.manager.writeCharacteristicWithoutResponseForDevice(
+        device.id,
+        SERVICE_UUID,
+        CHARACTERISTIC_CONTROL,
+        value
+      );
+      console.log("✅ BLE CONTROL write 성공:", command);
+    } catch (error) {
+      console.log("❌ BLE CONTROL write 실패:", error);
+      throw error;
+    }
   }
 
   subscribeLiveStatus(onUpdate: (status: LiveStatus) => void): Subscription {
@@ -104,16 +145,6 @@ export class BleService {
     );
   }
 
-  /**
-   * 종료 신호를 보내고 청크를 모아 하나의 RidePayload로 재조립해 반환한다.
-   *
-   * 중요: 알림 구독을 먼저 걸어둔 "다음에" 종료 신호를 보내야 한다. 순서가 반대면
-   * 파이가 구독이 채 걸리기도 전에 알림을 다 쏴버려서 앱이 못 받는 경쟁 상태(race
-   * condition)가 생긴다 — 처음 구현에서 실제로 이 버그로 종료가 계속 실패했었음.
-   *
-   * 일정 시간 안에 다음 청크가 안 오면 RideDataStalledError를 던짐 — 호출부에서
-   * 이 함수를 다시 부르면 재구독+재종료신호로 재시도된다 (BLE_PROTOCOL.md §2-3).
-   */
   async stopRideAndReceiveData(): Promise<RidePayload> {
     const device = this.requireDevice();
 
@@ -171,7 +202,6 @@ export class BleService {
 
       resetTimeout();
 
-      // 구독이 걸린 다음에만 종료 신호를 보낸다 (위 주석 참고)
       this.writeControl(0x02).catch((err) => {
         cleanup();
         reject(err);
