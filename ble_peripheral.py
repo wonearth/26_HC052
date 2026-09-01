@@ -330,7 +330,7 @@ class BlePeripheralServer:
         self._periph.add_characteristic(
             srv_id=1, chr_id=1, uuid=CHAR_CONTROL_UUID,
             value=[], notifying=False,
-            flags=["write-without-response"],
+            flags=["write"],
             write_callback=self._on_control_write,
         )
         self._periph.add_characteristic(

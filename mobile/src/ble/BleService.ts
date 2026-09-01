@@ -107,27 +107,13 @@ export class BleService {
 
   private async writeControl(command: number): Promise<void> {
     const device = this.requireDevice();
-
-    console.log("🔵 BLE CONTROL 전송 시작");
-    console.log("device.id =", device.id);
-    console.log("SERVICE_UUID =", SERVICE_UUID);
-    console.log("CONTROL_UUID =", CHARACTERISTIC_CONTROL);
-    console.log("command =", command);
-
     const value = base64Encode(new Uint8Array([command]));
-
-    try {
-      await this.manager.writeCharacteristicWithoutResponseForDevice(
-        device.id,
-        SERVICE_UUID,
-        CHARACTERISTIC_CONTROL,
-        value
-      );
-      console.log("✅ BLE CONTROL write 성공:", command);
-    } catch (error) {
-      console.log("❌ BLE CONTROL write 실패:", error);
-      throw error;
-    }
+    await this.manager.writeCharacteristicWithResponseForDevice(
+      device.id,
+      SERVICE_UUID,
+      CHARACTERISTIC_CONTROL,
+      value
+    );
   }
 
   subscribeLiveStatus(onUpdate: (status: LiveStatus) => void): Subscription {
