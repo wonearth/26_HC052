@@ -72,6 +72,7 @@ class RideSession:
         self._events = []
         self._speed_samples = []
         self._last_point = None
+        self._last_sample_mono = None
         self._last_speed_kmh = None
         self._last_event_at = {}
         self._distance_km = 0.0
@@ -89,20 +90,32 @@ class RideSession:
             return self._active
 
     def record_sample(self, lat, lng, speed_kmh, risk_key):
-        """gps_reader 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger."""
+        """gps_reader 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger.
+
+        거리는 두 GPS 점 사이 직선거리(haversine) 대신 "속도 x 경과시간"으로 누적한다.
+        샘플링 주기(SAMPLE_INTERVAL_SEC)가 2초라서, 천천히 이동하면(예: 도보 속도) 한 번에
+        움직이는 거리가 MIN_MOVE_KM(3m)보다 작아 haversine 방식으로는 계속 0으로 걸러지는
+        문제가 있었음 — 실내 테스트에서 30m 넘게 걸었는데도 거리가 0km로 나온 원인.
+        속도 기반으로 하면 저속 이동도 정확히 누적되고, 정지 중엔 속도가 0이라 안 늘어난다.
+        """
         with self._lock:
             if not self._active or lat is None or lng is None:
                 return
             risk_level = RISK_TO_KOREAN.get(risk_key, "안전")
             now = datetime.now(timezone.utc)
+            now_mono = time.monotonic()
 
-            if self._last_point is not None:
-                delta_km = _haversine_km(self._last_point[0], self._last_point[1], lat, lng)
-                if delta_km >= MIN_MOVE_KM:
-                    self._distance_km += delta_km
-                    self._last_point = (lat, lng)
-            else:
-                self._last_point = (lat, lng)
+            if self._last_sample_mono is not None:
+                elapsed_sec = max(0.0, now_mono - self._last_sample_mono)
+                if speed_kmh is not None:
+                    self._distance_km += speed_kmh * (elapsed_sec / 3600)
+                elif self._last_point is not None:
+                    delta_km = _haversine_km(self._last_point[0], self._last_point[1], lat, lng)
+                    if delta_km >= MIN_MOVE_KM:
+                        self._distance_km += delta_km
+
+            self._last_point = (lat, lng)
+            self._last_sample_mono = now_mono
 
             self._points.append({
                 "seq": len(self._points),
