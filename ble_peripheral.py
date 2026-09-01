@@ -42,6 +42,7 @@ MIN_MOVE_KM = 0.003            # 이보다 작은 이동은 GPS 노이즈로 보
 HARD_BRAKE_DELTA_KMH = 12.0    # 샘플링 주기 사이 이만큼 속도가 줄면 급정거로 판정
 HARD_BRAKE_MIN_SPEED_KMH = 8.0  # 이 속도 이상으로 달리던 중에만 급정거로 인정 (정지 상태 노이즈 방지)
 EVENT_COOLDOWN_SEC = 3.0       # 같은 대상이 연속으로 이벤트를 계속 만들지 않도록 최소 간격
+PHONE_GPS_STALE_SEC = 5.0      # 이보다 오래 갱신이 없으면 연결이 끊긴 것으로 보고 픽스 무효 처리
 
 RISK_TO_KOREAN = {"safe": "안전", "caution": "주의", "warning": "경고", "danger": "위험"}
 # web/app.py의 _compute_safety_score()와 동일한 감점 기준 (일관성 유지)
@@ -90,7 +91,7 @@ class RideSession:
             return self._active
 
     def record_sample(self, lat, lng, speed_kmh, risk_key):
-        """gps_reader 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger.
+        """폰 GPS 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger.
 
         거리는 두 GPS 점 사이 직선거리(haversine) 대신 "속도 x 경과시간"으로 누적한다.
         샘플링 주기(SAMPLE_INTERVAL_SEC)가 2초라서, 천천히 이동하면(예: 도보 속도) 한 번에
@@ -188,15 +189,15 @@ class BlePeripheralServer:
     """
     live_state_getter: () -> dict   # app.py의 get_live_state()와 동일한 형태
         {"risk": "safe"|"caution"|"warning"|"danger", "class_name":..., "distance_m":..., "ttc_sec":...}
-    gps_getter: () -> dict          # gps_reader.get_current_position()와 동일한 형태
-        {"lat":..., "lng":..., "speed_kmh":..., "fix": bool}
+
+    GPS는 파이 자체 하드웨어 대신 앱이 폰 GPS를 BLE로 전달해준 값을 쓴다
+    (CHAR_PHONE_GPS_UUID, _on_phone_gps_write 참고).
     """
 
-    def __init__(self, live_state_getter, gps_getter, local_name="PM-ADAS-Pi"):
+    def __init__(self, live_state_getter, local_name="PM-ADAS-Pi"):
         if not _BLUEZERO_AVAILABLE:
             raise RuntimeError("bluezero가 설치되어 있지 않습니다 (pip3 install bluezero)")
         self._live_state_getter = live_state_getter
-        self._gps_getter = gps_getter
         self._local_name = local_name
         self._session = RideSession()
         self._periph = None
@@ -210,10 +211,10 @@ class BlePeripheralServer:
             "fix": False,
             "updated_at": None,
         }
+        self._phone_gps_mono = None
 
     def _on_control_write(self, value, options=None):
         command = value[0] if value else None
-        print(f"🔵 CONTROL WRITE 수신: value={value}, command={command}", flush=True)
         if command == CONTROL_START:
             print("▶️  BLE: 주행 시작 신호 수신")
             self._session.start()
@@ -247,17 +248,18 @@ class BlePeripheralServer:
                     "fix": True,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
-
-            print(
-                f"📱 PHONE GPS: lat={float(lat):.6f}, "
-                f"lng={float(lng):.6f}, speed={float(speed_kmh or 0.0):.1f} km/h",
-                flush=True,
-            )
+                self._phone_gps_mono = time.monotonic()
         except Exception as e:
             print(f"⚠️ 폰 GPS BLE 데이터 처리 실패: {e}", flush=True)
 
     def _get_phone_gps(self):
+        # 연결이 끊긴 동안 마지막 값을 계속 재사용하면, 예전 속도로 계속 이동한 것처럼
+        # 거리가 거짓으로 누적되는 문제가 있었음 (PHONE_GPS_STALE_SEC 보다 오래되면 픽스 무효 처리).
         with self._phone_gps_lock:
+            if self._phone_gps_mono is None:
+                return dict(self._phone_gps)
+            if time.monotonic() - self._phone_gps_mono > PHONE_GPS_STALE_SEC:
+                return {**self._phone_gps, "fix": False}
             return dict(self._phone_gps)
 
     def _start_sampling(self):
@@ -327,7 +329,7 @@ class BlePeripheralServer:
         self._periph.add_characteristic(
             srv_id=1, chr_id=1, uuid=CHAR_CONTROL_UUID,
             value=[], notifying=False,
-            flags=["write-without-response"],
+            flags=["write"],
             write_callback=self._on_control_write,
         )
         self._periph.add_characteristic(
