@@ -215,7 +215,6 @@ class BlePeripheralServer:
 
     def _on_control_write(self, value, options=None):
         command = value[0] if value else None
-        print(f"🔵 CONTROL WRITE 수신: value={value}, command={command}", flush=True)
         if command == CONTROL_START:
             print("▶️  BLE: 주행 시작 신호 수신")
             self._session.start()

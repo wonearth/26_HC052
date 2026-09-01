@@ -57,15 +57,6 @@ export class BleService {
     const device = await this.manager.connectToDevice(mac, { timeout: 10000 });
     await device.discoverAllServicesAndCharacteristics();
 
-    const chars = await device.characteristicsForService(SERVICE_UUID);
-    chars.forEach((c) => {
-      console.log("===== CHARACTERISTIC =====");
-      console.log("UUID:", c.uuid);
-      console.log("isWritableWithResponse:", c.isWritableWithResponse);
-      console.log("isWritableWithoutResponse:", c.isWritableWithoutResponse);
-      console.log("isNotifiable:", c.isNotifiable);
-    });
-
     this.device = device;
     device.onDisconnected(() => {
       if (this.device?.id === device.id) this.device = null;
