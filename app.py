@@ -15,6 +15,7 @@ from picamera2 import Picamera2
 
 import gps_reader
 import ble_peripheral
+import imu_sensor
 
 # =========================
 # 설정값
@@ -708,14 +709,22 @@ def main():
     gps_thread.start()
     print("5. GPS 리더 스레드 시작!")
 
+    imu_thread = threading.Thread(
+        target=imu_sensor.imu_reader_loop,
+        daemon=True,
+    )
+    imu_thread.start()
+    print("6. IMU 사고 감지 스레드 시작!")
+
     try:
         ble_server = ble_peripheral.BlePeripheralServer(
             live_state_getter=get_live_state,
             gps_getter=gps_reader.get_current_position,
+            imu_getter=imu_sensor.get_imu_state,
         )
         ble_thread = threading.Thread(target=ble_server.start, daemon=True)
         ble_thread.start()
-        print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결)")
+        print("7. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결)")
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
 
