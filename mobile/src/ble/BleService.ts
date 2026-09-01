@@ -4,11 +4,10 @@ import { base64Decode, base64Encode } from "./base64";
 import {
   CHARACTERISTIC_CONTROL,
   CHARACTERISTIC_LIVE_STATUS,
-  CHARACTERISTIC_PHONE_GPS,
   CHARACTERISTIC_RIDE_DATA,
   SERVICE_UUID,
 } from "./protocol";
-import type { RidePayload } from "../types/ride";
+import type { PiRideSummary } from "../types/ride";
 
 export interface LiveStatus {
   riskLevel: number;
@@ -84,24 +83,6 @@ export class BleService {
     await this.writeControl(0x01);
   }
 
-  async sendPhoneGps(lat: number, lng: number, speedKmh: number): Promise<void> {
-    const device = this.requireDevice();
-    const json = JSON.stringify({
-      lat,
-      lng,
-      speed_kmh: Math.max(0, speedKmh),
-    });
-    const bytes = new TextEncoder().encode(json);
-    const value = base64Encode(bytes);
-
-    await this.manager.writeCharacteristicWithoutResponseForDevice(
-      device.id,
-      SERVICE_UUID,
-      CHARACTERISTIC_PHONE_GPS,
-      value
-    );
-  }
-
   private async writeControl(command: number): Promise<void> {
     const device = this.requireDevice();
     const value = base64Encode(new Uint8Array([command]));
@@ -128,10 +109,10 @@ export class BleService {
     );
   }
 
-  async stopRideAndReceiveData(): Promise<RidePayload> {
+  async stopRideAndReceiveData(): Promise<PiRideSummary> {
     const device = this.requireDevice();
 
-    return new Promise<RidePayload>((resolve, reject) => {
+    return new Promise<PiRideSummary>((resolve, reject) => {
       const chunks = new Map<number, Uint8Array>();
       let lastChunkSeq: number | null = null;
       let timeoutHandle: ReturnType<typeof setTimeout>;
@@ -175,7 +156,7 @@ export class BleService {
                   .flatMap(([, part]) => [...part])
               );
               const json = new TextDecoder().decode(total);
-              resolve(JSON.parse(json) as RidePayload);
+              resolve(JSON.parse(json) as PiRideSummary);
             } catch (parseError) {
               reject(parseError);
             }

@@ -6,7 +6,6 @@ export const SERVICE_UUID = "b4ecbebf-e498-4421-9b90-830fdef8c16a";
 export const CHARACTERISTIC_CONTROL = "8ea73ee0-6fbd-4a5b-a121-e249ba53033a";
 export const CHARACTERISTIC_LIVE_STATUS = "0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e";
 export const CHARACTERISTIC_RIDE_DATA = "10a90785-c204-4b26-aeac-56f0336b9f14";
-export const CHARACTERISTIC_PHONE_GPS = "7d2f4b8e-1a63-4c91-9e52-6b7f3d8a2041";
 
 export const CONTROL_START = 0x01;
 export const CONTROL_STOP = 0x02;

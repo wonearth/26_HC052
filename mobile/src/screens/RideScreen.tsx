@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from "react-native";
-import * as Location from "expo-location";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/types";
 import { bleService, RideDataStalledError, type LiveStatus } from "../ble/BleService";
 import { RISK_LEVEL_BY_CODE } from "../ble/protocol";
 import { saveRide } from "../db/database";
 import { colors, riskColor } from "../theme/colors";
+import { RideGpsTracker } from "../gps/rideGpsTracker";
+import { attachLocationToEvents } from "../gps/mergeEvents";
+import type { RiskLevel } from "../types/ride";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Ride">;
 type Phase = "connected" | "riding" | "reconnecting" | "receiving";
@@ -17,94 +19,56 @@ export default function RideScreen({ route, navigation }: Props) {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
-  const [bleDisconnected, setBleDisconnected] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const liveStatusSubscriptionRef = useRef<{ remove: () => void } | null>(null);
-  const disconnectSubscriptionRef = useRef<{ remove: () => void } | null>(null);
+  const trackerRef = useRef(new RideGpsTracker());
+  const currentRiskRef = useRef<RiskLevel>("안전");
 
-  const stopPhoneGps = useCallback(() => {
-    locationSubscriptionRef.current?.remove();
-    locationSubscriptionRef.current = null;
-  }, []);
-
-  const startPhoneGps = useCallback(async () => {
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (permission.status !== "granted") {
-      throw new Error("휴대폰 위치 권한이 필요합니다.");
-    }
-
-    const servicesEnabled = await Location.hasServicesEnabledAsync();
-    if (!servicesEnabled) {
-      throw new Error("휴대폰의 위치(GPS) 기능을 켜주세요.");
-    }
-
-    stopPhoneGps();
-
-    locationSubscriptionRef.current = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 1000,
-        distanceInterval: 1,
-      },
-      (location) => {
-        const { latitude, longitude, speed } = location.coords;
-        const speedKmh = speed != null && speed >= 0 ? speed * 3.6 : 0;
-        setCurrentSpeedKmh(speedKmh);
-
-        bleService
-          .sendPhoneGps(latitude, longitude, speedKmh)
-          .catch((error) => console.log("⚠️ PHONE GPS BLE 전송 실패:", error));
-      }
-    );
-  }, [stopPhoneGps]);
+  useEffect(() => {
+    const riskIndex = liveStatus?.riskLevel ?? 0;
+    currentRiskRef.current = RISK_LEVEL_BY_CODE[riskIndex] ?? "안전";
+  }, [liveStatus]);
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      stopPhoneGps();
+      trackerRef.current.stop();
       liveStatusSubscriptionRef.current?.remove();
-      disconnectSubscriptionRef.current?.remove();
     };
-  }, [stopPhoneGps]);
+  }, []);
 
   const handleStart = useCallback(async () => {
     try {
-      // 먼저 위치 권한/GPS 상태를 확인한다. 실패하면 Pi 주행도 시작하지 않는다.
-      await startPhoneGps();
+      // GPS는 블루투스 상태와 무관하게 폰이 스스로 계속 기록한다 (연결 끊겨도 안전).
+      await trackerRef.current.start({
+        getCurrentRisk: () => currentRiskRef.current,
+        onSpeedUpdate: setCurrentSpeedKmh,
+      });
 
       try {
         await bleService.sendStart();
       } catch (error) {
-        stopPhoneGps();
+        trackerRef.current.stop();
         throw error;
       }
 
       setPhase("riding");
       setElapsedSec(0);
-      setBleDisconnected(false);
 
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
 
       liveStatusSubscriptionRef.current?.remove();
       liveStatusSubscriptionRef.current = bleService.subscribeLiveStatus(setLiveStatus);
-
-      disconnectSubscriptionRef.current?.remove();
-      disconnectSubscriptionRef.current = bleService.onDeviceDisconnected(() => setBleDisconnected(true));
     } catch (e) {
       Alert.alert("시작 실패", e instanceof Error ? e.message : String(e));
     }
-  }, [startPhoneGps, stopPhoneGps]);
+  }, []);
 
   const ensureConnected = useCallback(async () => {
-    if (bleService.isConnected()) {
-      setBleDisconnected(false);
-      return;
-    }
+    if (bleService.isConnected()) return;
     setPhase("reconnecting");
     await bleService.connectByMac(mac);
-    setBleDisconnected(false);
   }, [mac]);
 
   const handleStop = useCallback(async () => {
@@ -113,36 +77,44 @@ export default function RideScreen({ route, navigation }: Props) {
       timerRef.current = null;
     }
 
-    // STOP 직전까지의 위치는 이미 Pi로 전달되어 있으므로 추적을 종료한다.
-    stopPhoneGps();
+    // GPS 기록은 이미 폰에 다 있으니 여기서 멈춰도 됨 — 이후엔 파이 이벤트만 받으면 됨.
+    trackerRef.current.stop();
 
     try {
       await ensureConnected();
       setPhase("receiving");
-      const payload = await bleService.stopRideAndReceiveData();
+      const piSummary = await bleService.stopRideAndReceiveData();
       liveStatusSubscriptionRef.current?.remove();
       liveStatusSubscriptionRef.current = null;
-      const rideId = await saveRide(payload);
+
+      const gps = trackerRef.current.getSummary();
+      const events = attachLocationToEvents(piSummary.events, gps.points);
+
+      const rideId = await saveRide({
+        client_ride_uuid: piSummary.client_ride_uuid,
+        started_at: piSummary.started_at,
+        ended_at: piSummary.ended_at,
+        duration_sec: piSummary.duration_sec,
+        safety_score: piSummary.safety_score,
+        distance_km: gps.distance_km,
+        avg_speed_kmh: gps.avg_speed_kmh,
+        max_speed_kmh: gps.max_speed_kmh,
+        hard_brake_count: gps.hard_brake_count,
+        points: gps.points,
+        events,
+      });
       navigation.replace("RideDetail", { rideId });
     } catch (e) {
       if (e instanceof RideDataStalledError) {
         Alert.alert("전송 중단", "주행기록 수신이 끊겼습니다. 종료를 다시 눌러 재시도해주세요.");
         setPhase("riding");
-
-        // 주행 종료가 확정되지 않았으므로 GPS 추적을 다시 시작한다.
-        startPhoneGps().catch((error) =>
-          Alert.alert("GPS 재시작 실패", error instanceof Error ? error.message : String(error))
-        );
         return;
       }
 
       Alert.alert("종료 실패", e instanceof Error ? e.message : String(e));
       setPhase("riding");
-      startPhoneGps().catch((error) =>
-        Alert.alert("GPS 재시작 실패", error instanceof Error ? error.message : String(error))
-      );
     }
-  }, [ensureConnected, navigation, startPhoneGps, stopPhoneGps]);
+  }, [ensureConnected, navigation]);
 
   const riskIndex = liveStatus?.riskLevel ?? 0;
   const riskLabel = RISK_LEVEL_BY_CODE[riskIndex] ?? "안전";
@@ -152,12 +124,6 @@ export default function RideScreen({ route, navigation }: Props) {
       {phase === "riding" && (
         <View style={[styles.banner, { backgroundColor: riskColor[riskLabel] }]}>
           <Text style={styles.bannerText}>{riskLabel}</Text>
-        </View>
-      )}
-
-      {phase === "riding" && bleDisconnected && (
-        <View style={styles.disconnectBanner}>
-          <Text style={styles.disconnectBannerText}>파이와 연결 끊김 · 주행 계속 가능, 종료 시 재연결됨</Text>
         </View>
       )}
 
@@ -206,13 +172,6 @@ const styles = StyleSheet.create({
   },
   banner: { position: "absolute", top: 0, left: 0, right: 0, paddingTop: 56, paddingBottom: 16, alignItems: "center" },
   bannerText: { color: "#04222b", fontWeight: "800", fontSize: 18 },
-  disconnectBanner: {
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: colors.surfaceAlt,
-  },
-  disconnectBannerText: { color: colors.textMuted, fontSize: 12, fontWeight: "600" },
   timer: { color: colors.text, fontSize: 48, fontWeight: "700" },
   speed: { color: colors.accent, fontSize: 20, fontWeight: "700" },
   mac: { color: colors.textMuted, fontSize: 13 },
