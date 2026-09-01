@@ -91,7 +91,7 @@ class RideSession:
             return self._active
 
     def record_sample(self, lat, lng, speed_kmh, risk_key):
-        """gps_reader 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger.
+        """폰 GPS 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger.
 
         거리는 두 GPS 점 사이 직선거리(haversine) 대신 "속도 x 경과시간"으로 누적한다.
         샘플링 주기(SAMPLE_INTERVAL_SEC)가 2초라서, 천천히 이동하면(예: 도보 속도) 한 번에
@@ -189,15 +189,15 @@ class BlePeripheralServer:
     """
     live_state_getter: () -> dict   # app.py의 get_live_state()와 동일한 형태
         {"risk": "safe"|"caution"|"warning"|"danger", "class_name":..., "distance_m":..., "ttc_sec":...}
-    gps_getter: () -> dict          # gps_reader.get_current_position()와 동일한 형태
-        {"lat":..., "lng":..., "speed_kmh":..., "fix": bool}
+
+    GPS는 파이 자체 하드웨어 대신 앱이 폰 GPS를 BLE로 전달해준 값을 쓴다
+    (CHAR_PHONE_GPS_UUID, _on_phone_gps_write 참고).
     """
 
-    def __init__(self, live_state_getter, gps_getter, local_name="PM-ADAS-Pi"):
+    def __init__(self, live_state_getter, local_name="PM-ADAS-Pi"):
         if not _BLUEZERO_AVAILABLE:
             raise RuntimeError("bluezero가 설치되어 있지 않습니다 (pip3 install bluezero)")
         self._live_state_getter = live_state_getter
-        self._gps_getter = gps_getter
         self._local_name = local_name
         self._session = RideSession()
         self._periph = None
