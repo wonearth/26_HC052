@@ -49,6 +49,12 @@ export class BleService {
     return this.device !== null;
   }
 
+  /** 지금 연결된 기기가 끊기면 콜백을 호출한다. 연결된 게 없으면 즉시 에러. */
+  onDeviceDisconnected(callback: () => void): Subscription {
+    const device = this.requireDevice();
+    return device.onDisconnected(() => callback());
+  }
+
   getConnectedMac(): string | null {
     return this.device?.id ?? null;
   }

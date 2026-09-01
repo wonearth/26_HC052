@@ -16,9 +16,12 @@ export default function RideScreen({ route, navigation }: Props) {
   const [phase, setPhase] = useState<Phase>("connected");
   const [elapsedSec, setElapsedSec] = useState(0);
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
+  const [bleDisconnected, setBleDisconnected] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const liveStatusSubscriptionRef = useRef<{ remove: () => void } | null>(null);
+  const disconnectSubscriptionRef = useRef<{ remove: () => void } | null>(null);
 
   const stopPhoneGps = useCallback(() => {
     locationSubscriptionRef.current?.remove();
@@ -47,6 +50,7 @@ export default function RideScreen({ route, navigation }: Props) {
       (location) => {
         const { latitude, longitude, speed } = location.coords;
         const speedKmh = speed != null && speed >= 0 ? speed * 3.6 : 0;
+        setCurrentSpeedKmh(speedKmh);
 
         bleService
           .sendPhoneGps(latitude, longitude, speedKmh)
@@ -60,6 +64,7 @@ export default function RideScreen({ route, navigation }: Props) {
       if (timerRef.current) clearInterval(timerRef.current);
       stopPhoneGps();
       liveStatusSubscriptionRef.current?.remove();
+      disconnectSubscriptionRef.current?.remove();
     };
   }, [stopPhoneGps]);
 
@@ -77,21 +82,29 @@ export default function RideScreen({ route, navigation }: Props) {
 
       setPhase("riding");
       setElapsedSec(0);
+      setBleDisconnected(false);
 
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
 
       liveStatusSubscriptionRef.current?.remove();
       liveStatusSubscriptionRef.current = bleService.subscribeLiveStatus(setLiveStatus);
+
+      disconnectSubscriptionRef.current?.remove();
+      disconnectSubscriptionRef.current = bleService.onDeviceDisconnected(() => setBleDisconnected(true));
     } catch (e) {
       Alert.alert("시작 실패", e instanceof Error ? e.message : String(e));
     }
   }, [startPhoneGps, stopPhoneGps]);
 
   const ensureConnected = useCallback(async () => {
-    if (bleService.isConnected()) return;
+    if (bleService.isConnected()) {
+      setBleDisconnected(false);
+      return;
+    }
     setPhase("reconnecting");
     await bleService.connectByMac(mac);
+    setBleDisconnected(false);
   }, [mac]);
 
   const handleStop = useCallback(async () => {
@@ -142,7 +155,14 @@ export default function RideScreen({ route, navigation }: Props) {
         </View>
       )}
 
+      {phase === "riding" && bleDisconnected && (
+        <View style={styles.disconnectBanner}>
+          <Text style={styles.disconnectBannerText}>파이와 연결 끊김 · 주행 계속 가능, 종료 시 재연결됨</Text>
+        </View>
+      )}
+
       <Text style={styles.timer}>{formatElapsed(elapsedSec)}</Text>
+      {phase === "riding" && <Text style={styles.speed}>{currentSpeedKmh.toFixed(1)} km/h</Text>}
       <Text style={styles.mac}>파이 {mac}</Text>
 
       {phase === "connected" && (
@@ -186,7 +206,15 @@ const styles = StyleSheet.create({
   },
   banner: { position: "absolute", top: 0, left: 0, right: 0, paddingTop: 56, paddingBottom: 16, alignItems: "center" },
   bannerText: { color: "#04222b", fontWeight: "800", fontSize: 18 },
+  disconnectBanner: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceAlt,
+  },
+  disconnectBannerText: { color: colors.textMuted, fontSize: 12, fontWeight: "600" },
   timer: { color: colors.text, fontSize: 48, fontWeight: "700" },
+  speed: { color: colors.accent, fontSize: 20, fontWeight: "700" },
   mac: { color: colors.textMuted, fontSize: 13 },
   startButton: { backgroundColor: colors.accent, paddingVertical: 18, paddingHorizontal: 48, borderRadius: 100 },
   startButtonText: { color: "#04222b", fontWeight: "800", fontSize: 18 },
