@@ -10,8 +10,8 @@
 
 [Unit]
 Description=PM ADAS - 실시간 감지 서버
-After=network-online.target
-Wants=network-online.target
+After=bluetooth.target
+Wants=bluetooth.target
 
 [Service]
 Type=simple
