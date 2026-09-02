@@ -24,7 +24,8 @@
         "android.permission.BLUETOOTH",
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_CONNECT",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "VIBRATE"
       ],
       "package": "com.anonymous.pmadas"
     },

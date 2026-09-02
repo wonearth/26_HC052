@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, ActivityIndicator } from "react-native";
+import { useKeepAwake } from "expo-keep-awake";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/types";
 import { bleService, RideDataStalledError, type ImuStatus, type LiveStatus } from "../ble/BleService";
@@ -8,12 +9,14 @@ import { saveRide } from "../db/database";
 import { colors, riskColor } from "../theme/colors";
 import { RideGpsTracker } from "../gps/rideGpsTracker";
 import { attachLocationToEvents } from "../gps/mergeEvents";
+import { playRideAlert } from "../alert/rideAlert";
 import type { RawRideEvent, RiskLevel } from "../types/ride";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Ride">;
 type Phase = "connected" | "riding" | "reconnecting" | "receiving";
 
 export default function RideScreen({ route, navigation }: Props) {
+  useKeepAwake(); // 주행 화면에 있는 동안 화면이 꺼지지 않도록 (위험 배너/속도가 안 보이면 안 되니까)
   const { mac } = route.params;
   const [phase, setPhase] = useState<Phase>("connected");
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -29,10 +32,17 @@ export default function RideScreen({ route, navigation }: Props) {
   const imuEventsRef = useRef<RawRideEvent[]>([]);
   const lastImpactRef = useRef(false);
   const lastRolloverRef = useRef(false);
+  const lastAlertRiskRef = useRef(0);
 
   useEffect(() => {
     const riskIndex = liveStatus?.riskLevel ?? 0;
     currentRiskRef.current = RISK_LEVEL_BY_CODE[riskIndex] ?? "안전";
+
+    // 경고(2)/위험(3) 단계로 "새로 진입"할 때만 알림 — 같은 단계 유지 중엔 계속 안 울림
+    if (riskIndex > lastAlertRiskRef.current && riskIndex >= 2) {
+      playRideAlert();
+    }
+    lastAlertRiskRef.current = riskIndex;
   }, [liveStatus]);
 
   const handleImuUpdate = useCallback((status: ImuStatus) => {
@@ -47,6 +57,7 @@ export default function RideScreen({ route, navigation }: Props) {
         distance_m: 0,
         ttc_sec: 0,
       });
+      playRideAlert([0, 300, 100, 300, 100, 300]);
     }
     if (status.rollover && !lastRolloverRef.current) {
       imuEventsRef.current.push({
@@ -56,6 +67,7 @@ export default function RideScreen({ route, navigation }: Props) {
         distance_m: 0,
         ttc_sec: 0,
       });
+      playRideAlert([0, 300, 100, 300, 100, 300]);
     }
     lastImpactRef.current = status.impact;
     lastRolloverRef.current = status.rollover;
@@ -92,6 +104,7 @@ export default function RideScreen({ route, navigation }: Props) {
       imuEventsRef.current = [];
       lastImpactRef.current = false;
       lastRolloverRef.current = false;
+      lastAlertRiskRef.current = 0;
 
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => setElapsedSec((s) => s + 1), 1000);
