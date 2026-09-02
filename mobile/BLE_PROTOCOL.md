@@ -1,12 +1,19 @@
-# PM ADAS — 파이 ↔ 앱 BLE 통신 규약 (v1)
+# PM ADAS — 파이 ↔ 앱 BLE 통신 규약 (v2)
 
 파이(BLE Peripheral)와 앱(BLE Central, React Native/Expo, 안드로이드)이 서로 다른 사람이
 개발하기 때문에, 아래 규약대로만 맞추면 양쪽을 독립적으로 개발해도 나중에 바로 연결됨.
 
+**v2 변경점**: GPS는 이제 파이가 아니라 **폰이 직접** 기록한다. 파이는 카메라 위험 이벤트만
+기록해서 종료 시 넘겨주고, 앱이 자기 GPS 기록이랑 그 이벤트를 시각(occurred_at) 기준으로
+합쳐서 최종 라이딩 데이터를 만든다. (v1에서는 폰 GPS를 실시간으로 파이에 계속 전송했는데,
+블루투스가 끊기면 그 구간 위치가 아예 안 잡히고 경로가 끊기는 문제가 있어서 이 방식으로 바꿈)
+
 ## 0. 역할
 
 - **파이 = Peripheral (주변장치)**: BLE 광고(advertising)를 내보내고, GATT 서버 역할을 함.
+  카메라로 위험 이벤트를 감지해서 시각과 함께 기록.
 - **앱 = Central (중심장치)**: 연결을 거는 쪽. QR로 얻은 파이의 MAC 주소로 직접 연결.
+  자기 GPS를 스스로 기록하고, 종료 시 파이의 이벤트를 받아서 위치를 붙여 합침.
 
 ## 1. QR 코드 내용
 
@@ -30,23 +37,26 @@ b4ecbebf-e498-4421-9b90-830fdef8c16a
 
 | Characteristic | UUID | 속성 | 방향 |
 |---|---|---|---|
-| Control (제어) | `8ea73ee0-6fbd-4a5b-a121-e249ba53033a` | Write | 앱 → 파이 |
+| Control (제어) | `8ea73ee0-6fbd-4a5b-a121-e249ba53033a` | Write (응답 확인) | 앱 → 파이 |
 | Live Status (실시간 상태) | `0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e` | Notify | 파이 → 앱 |
 | Ride Data (주행기록 전송) | `10a90785-c204-4b26-aeac-56f0336b9f14` | Notify | 파이 → 앱 |
+| IMU (기울기/충돌/전복) | `6f8d7b21-3e2a-4f9c-a6d1-5b7c8e9f1023` | Notify | 파이 → 앱 |
+
+(v1에 있던 Phone GPS characteristic은 더 이상 안 씀 — 폰이 파이한테 GPS를 안 보냄)
 
 ### 2-1. Control (제어) — 앱이 씀
 
-1바이트 커맨드:
+1바이트 커맨드, **응답 확인(write-with-response)으로 보낼 것** — 시작/종료는 놓치면 안 되는
+중요한 신호라 응답 없이 보내면 실패를 못 알아챔:
 
 | 값 | 의미 |
 |---|---|
-| `0x01` | 주행 시작 — 파이는 GPS+이벤트 로컬 누적을 시작 |
-| `0x02` | 주행 종료 — 파이는 누적을 멈추고, Ride Data characteristic으로 전체 기록을 청크 전송 시작 |
+| `0x01` | 주행 시작 — 파이는 위험 이벤트 기록을 시작. 앱은 이 시점부터 자기 GPS 기록도 시작 |
+| `0x02` | 주행 종료 — 파이는 기록을 멈추고, Ride Data characteristic으로 이벤트 목록을 청크 전송 시작 |
 
 ### 2-2. Live Status (실시간 상태) — 파이가 알림, 선택 기능
 
-주행 중 위험 배너/경고음을 앱에서 실시간으로 보여주고 싶을 때만 사용. 안 쓰면 생략 가능
-(파이 쪽에서 이 characteristic을 아예 구현 안 해도 나머지 흐름엔 영향 없음).
+주행 중 위험 배너/경고음을 앱에서 실시간으로 보여주고 싶을 때만 사용. 안 쓰면 생략 가능.
 
 페이로드 (2바이트):
 ```
@@ -67,50 +77,91 @@ b4ecbebf-e498-4421-9b90-830fdef8c16a
 - 앱은 seq 순서대로 payload를 이어붙이고, flag=1인 청크를 받으면 전체를 합쳐 JSON.parse
 - **재전송 규칙**: 앱이 일정 시간(예: 5초) 내 다음 seq를 못 받으면, Control characteristic에
   `0x02`(종료)를 다시 써서 파이에게 처음부터 재전송을 요청함. 파이는 매번 0x02를 받을 때마다
-  현재 누적된 전체 데이터를 처음(seq=0)부터 다시 보냄 — 즉 앱 쪽에서 조립 실패 시 그냥
-  "종료 버튼 다시 누르기"와 동일한 동작으로 재시도 가능.
+  현재 누적된 이벤트를 처음(seq=0)부터 다시 보냄.
 
-## 3. 주행기록 JSON 스키마
+### 2-4. IMU (기울기/충돌/전복) — 파이가 알림, IMU 담당 팀원 구현
+
+주행 중 IMU 센서값을 JSON 문자열로 그대로 notify (청크 분할 없음 — 한 패킷에 들어가는 크기).
+갱신 주기는 현재 2초 (실시간성이 더 필요하면 조절 가능).
+
+```json
+{
+  "connected": true,
+  "roll": 0.0,
+  "pitch": 0.0,
+  "ax": 0.0,
+  "ay": 0.0,
+  "az": 0.0,
+  "acc_magnitude": 0.0,
+  "impact": false,
+  "rollover": false
+}
+```
+
+- `connected`: IMU 센서 연결 여부
+- `roll`/`pitch`: 기울기 (degree)
+- `ax`/`ay`/`az`: 각 축 가속도
+- `acc_magnitude`: 전체 가속도 크기
+- `impact`: 충돌 감지 (센서값 보정/기준은 IMU 담당 쪽에서 처리, 앱은 받은 값을 그대로 신뢰)
+- `rollover`: 전복 감지
+
+앱은 `impact`/`rollover`가 `true`로 바뀌는 순간을 위험 이벤트로 기록해서(장소는 그 순간 폰
+GPS 기록과 매칭, 3-3 참고) 최종 라이딩 데이터의 `events`에 카메라 이벤트와 함께 포함시킨다.
+
+## 3. 데이터 스키마
+
+### 3-1. 파이 → 앱 (Ride Data로 전달, 종료 시점)
+
+이벤트만 담고 있음 — GPS/거리/속도는 없음:
 
 ```json
 {
   "client_ride_uuid": "string (파이가 생성하는 라이딩 고유 ID, uuid4)",
   "started_at": "ISO8601 string",
   "ended_at": "ISO8601 string",
-  "distance_km": 0.0,
   "duration_sec": 0,
-  "avg_speed_kmh": 0.0,
-  "max_speed_kmh": 0.0,
-  "hard_brake_count": 0,
   "safety_score": 0,
-  "points": [
-    { "seq": 0, "lat": 0.0, "lng": 0.0, "recorded_at": "ISO8601", "risk_level": "안전" }
-  ],
   "events": [
     {
       "occurred_at": "ISO8601",
       "risk_level": "위험",
       "object_class": "person",
       "distance_m": 0.0,
-      "ttc_sec": 0.0,
-      "lat": 0.0,
-      "lng": 0.0
+      "ttc_sec": 0.0
     }
   ]
 }
 ```
 
 - `risk_level`은 문자열 `"안전"/"주의"/"경고"/"위험"` 4단계 고정
-- 필드명·단위는 위 스키마 그대로 고정 — 이후 앱/DB 쪽 파싱 코드가 이 스키마를 전제로 만들어짐
+- 이벤트에는 `lat`/`lng`가 없음 — 앱이 자기 GPS 기록이랑 시각을 맞춰서 붙임 (3-3 참고)
+
+### 3-2. 앱이 스스로 기록하는 GPS 포인트
+
+`Location.watchPositionAsync`로 주행 시작~종료 동안 계속 기록:
+
+```json
+{ "seq": 0, "lat": 0.0, "lng": 0.0, "recorded_at": "ISO8601", "risk_level": "안전", "speed_kmh": 0.0 }
+```
+
+이 기록으로부터 앱이 직접 계산: `distance_km`(속도 x 경과시간 누적 방식 — 저속 이동 시
+직선거리 방식은 부정확해서 지양), `avg_speed_kmh`, `max_speed_kmh`, `hard_brake_count`.
+
+### 3-3. 종료 시 앱이 최종 합치는 방식
+
+1. 파이에게 `0x02` 전송 → 3-1 스키마의 이벤트 목록 수신
+2. 각 이벤트의 `occurred_at`과 시간상 제일 가까운 자기 GPS 포인트(3-2)를 찾아서 그 `lat`/`lng`를 이벤트에 붙임
+3. 로컬 DB(`rides`/`ride_points`/`ride_events`)에 저장하는 최종 스키마 = 기존 v1과 동일:
+   `client_ride_uuid, started_at, ended_at, distance_km, duration_sec, avg_speed_kmh,
+   max_speed_kmh, hard_brake_count, safety_score, points[], events[](lat/lng 포함)`
 
 ## 4. 연결 상태 규칙
 
 - **시작 시점**: 앱-파이가 BLE로 연결되어 있어야 `0x01`(시작) 신호를 보낼 수 있음
-- **주행 중**: 연결이 끊겨도 무방 — 파이는 자체적으로 GPS+이벤트를 계속 로컬에 누적함.
-  연결 여부와 무관하게 동작해야 함 (파이 구현 시 이 부분이 핵심)
+- **주행 중**: 연결이 끊겨도 완전히 무방 — 파이는 카메라 이벤트를 계속 자체적으로 기록하고,
+  앱도 자기 GPS를 블루투스 상태와 무관하게 계속 기록함. 둘 다 서로 독립적으로 동작.
 - **종료 시점**: 앱이 다시 파이와 BLE 연결(재연결, QR 재스캔 불필요 — 이미 아는 MAC으로
-  바로 재연결)한 뒤 `0x02`(종료) 신호를 보내야 함. 파이는 이 시점에 누적을 멈추고 Ride Data
-  전송을 시작
+  바로 재연결)한 뒤 `0x02`(종료) 신호를 보내야 함.
 
 ## 5. 안드로이드 참고사항
 
