@@ -12,7 +12,6 @@ export type RootStackParamList = {
   Scan: undefined;
   Ride: { mac: string };
   RideDetail: { rideId: number };
-  Settings: undefined;
 };
 
 export type MainTabScreenProps<T extends keyof MainTabParamList> = CompositeScreenProps<

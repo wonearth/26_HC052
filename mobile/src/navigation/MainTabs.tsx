@@ -1,4 +1,3 @@
-import { Ionicons } from "@expo/vector-icons";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import HomeScreen from "../screens/HomeScreen";
 import ReportScreen from "../screens/ReportScreen";
@@ -17,26 +16,8 @@ export default function MainTabs() {
         tabBarStyle: { backgroundColor: colors.surface, borderTopColor: colors.border },
       }}
     >
-      <Tab.Screen
-        name="Home"
-        component={HomeScreen}
-        options={{
-          title: "홈",
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons name={focused ? "home" : "home-outline"} color={color} size={size} />
-          ),
-        }}
-      />
-      <Tab.Screen
-        name="Report"
-        component={ReportScreen}
-        options={{
-          title: "리포트",
-          tabBarIcon: ({ color, size, focused }) => (
-            <Ionicons name={focused ? "calendar" : "calendar-outline"} color={color} size={size} />
-          ),
-        }}
-      />
+      <Tab.Screen name="Home" component={HomeScreen} options={{ title: "홈" }} />
+      <Tab.Screen name="Report" component={ReportScreen} options={{ title: "리포트" }} />
     </Tab.Navigator>
   );
 }

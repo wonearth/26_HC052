@@ -1,6 +1,5 @@
 import type { RideEvent, RidePoint } from "../types/ride";
 import { colors, riskColor } from "../theme/colors";
-import { formatObjectClass } from "../utils/eventLabel";
 
 interface RiskSegment {
   risk: string;
@@ -36,7 +35,7 @@ export function buildRideMapHtml(points: RidePoint[], events: RideEvent[]): stri
     lat: e.lat,
     lng: e.lng,
     risk: e.risk_level,
-    desc: `${e.risk_level} · ${formatObjectClass(e.object_class)} · ${e.distance_m.toFixed(1)}m`,
+    desc: `${e.risk_level} · ${e.object_class} · ${e.distance_m.toFixed(1)}m`,
   }));
 
   return `<!doctype html>

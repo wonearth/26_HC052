@@ -1,11 +1,6 @@
 """
 파이를 BLE 주변장치(Peripheral/GATT 서버)로 만들어 앱과 통신한다.
-BLE_PROTOCOL.md(v2)의 서비스/캐릭터리스틱 규약을 그대로 구현.
-
-v2: GPS는 폰이 직접 기록한다. 파이는 카메라 위험 이벤트만 시각과 함께 기록해서
-종료 시 넘겨주고, 앱이 자기 GPS 기록과 시각을 맞춰서 최종 데이터를 합친다.
-(예전엔 폰 GPS를 실시간으로 파이에 계속 전송했는데, 블루투스가 끊기면 그 구간
-경로가 통째로 비는 문제가 있어서 이 방식으로 바꿈 — BLE_PROTOCOL.md 상단 참고)
+BLE_PROTOCOL.md 의 서비스/캐릭터리스틱 규약을 그대로 구현.
 
 필요 패키지 (파이에서 미리 설치):
     sudo apt install bluetooth bluez
@@ -13,11 +8,13 @@ v2: GPS는 폰이 직접 기록한다. 파이는 카메라 위험 이벤트만 �
 
 주의:
 - 이 모듈은 macOS/일반 PC에서는 동작하지 않는다 (BlueZ/D-Bus가 있는 라즈베리파이 OS 전용).
+  개발 중에는 문법 확인만 했고, 실제 블루투스 동작은 파이에서 처음 켤 때 확인해야 한다.
 - bluezero 버전에 따라 add_characteristic()의 콜백 시그니처나 adapter 조회 방식이
   조금씩 다를 수 있다. 아래 코드가 설치된 버전과 안 맞으면 bluezero 공식 예제
   (https://github.com/ukBaz/python-bluezero/tree/main/examples)를 참고해서 맞춰야 한다.
 """
 import json
+import math
 import threading
 import time
 import uuid as uuid_lib
@@ -34,21 +31,35 @@ SERVICE_UUID = "b4ecbebf-e498-4421-9b90-830fdef8c16a"
 CHAR_CONTROL_UUID = "8ea73ee0-6fbd-4a5b-a121-e249ba53033a"
 CHAR_LIVE_STATUS_UUID = "0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e"
 CHAR_RIDE_DATA_UUID = "10a90785-c204-4b26-aeac-56f0336b9f14"
+CHAR_PHONE_GPS_UUID = "7d2f4b8e-1a63-4c91-9e52-6b7f3d8a2041"
 
 CONTROL_START = 0x01
 CONTROL_STOP = 0x02
 
 CHUNK_PAYLOAD_SIZE = 150       # 청크당 payload 바이트 수 (MTU 여유를 둔 보수적인 값)
-LIVE_STATUS_INTERVAL_SEC = 2.0  # 실시간 위험도 notify 주기
+SAMPLE_INTERVAL_SEC = 2.0      # GPS+위험도 샘플링 주기
+MIN_MOVE_KM = 0.003            # 이보다 작은 이동은 GPS 노이즈로 보고 거리에 안 더함 (거리 과다누적 방지)
+HARD_BRAKE_DELTA_KMH = 12.0    # 샘플링 주기 사이 이만큼 속도가 줄면 급정거로 판정
+HARD_BRAKE_MIN_SPEED_KMH = 8.0  # 이 속도 이상으로 달리던 중에만 급정거로 인정 (정지 상태 노이즈 방지)
 EVENT_COOLDOWN_SEC = 3.0       # 같은 대상이 연속으로 이벤트를 계속 만들지 않도록 최소 간격
+PHONE_GPS_STALE_SEC = 5.0      # 이보다 오래 갱신이 없으면 연결이 끊긴 것으로 보고 픽스 무효 처리
 
 RISK_TO_KOREAN = {"safe": "안전", "caution": "주의", "warning": "경고", "danger": "위험"}
 # web/app.py의 _compute_safety_score()와 동일한 감점 기준 (일관성 유지)
 SAFETY_PENALTY = {"위험": 15, "경고": 8, "주의": 3, "안전": 0}
 
 
+def _haversine_km(lat1, lng1, lat2, lng2):
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    d_lat = math.radians(lat2 - lat1)
+    d_lng = math.radians(lng2 - lng1)
+    a = math.sin(d_lat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(d_lng / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
 class RideSession:
-    """주행 시작~종료 동안 카메라 위험 이벤트를 누적하고, 종료 시 하나의 JSON으로 요약한다."""
+    """주행 시작~종료 동안 GPS 포인트/위험 이벤트를 누적하고, 종료 시 하나의 JSON으로 요약한다."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -58,8 +69,15 @@ class RideSession:
     def _reset(self):
         self._client_ride_uuid = None
         self._started_at = None
+        self._points = []
         self._events = []
+        self._speed_samples = []
+        self._last_point = None
+        self._last_sample_mono = None
+        self._last_speed_kmh = None
         self._last_event_at = {}
+        self._distance_km = 0.0
+        self._hard_brake_count = 0
 
     def start(self):
         with self._lock:
@@ -72,8 +90,53 @@ class RideSession:
         with self._lock:
             return self._active
 
-    def record_event(self, risk_key, object_class, distance_m, ttc_sec):
-        """risk_key는 safe/caution/warning/danger. 위치는 안 담음 — 앱이 시각 기준으로 붙임."""
+    def record_sample(self, lat, lng, speed_kmh, risk_key):
+        """폰 GPS 픽스 + 카메라 위험도를 주기적으로 기록. risk_key는 safe/caution/warning/danger.
+
+        거리는 두 GPS 점 사이 직선거리(haversine) 대신 "속도 x 경과시간"으로 누적한다.
+        샘플링 주기(SAMPLE_INTERVAL_SEC)가 2초라서, 천천히 이동하면(예: 도보 속도) 한 번에
+        움직이는 거리가 MIN_MOVE_KM(3m)보다 작아 haversine 방식으로는 계속 0으로 걸러지는
+        문제가 있었음 — 실내 테스트에서 30m 넘게 걸었는데도 거리가 0km로 나온 원인.
+        속도 기반으로 하면 저속 이동도 정확히 누적되고, 정지 중엔 속도가 0이라 안 늘어난다.
+        """
+        with self._lock:
+            if not self._active or lat is None or lng is None:
+                return
+            risk_level = RISK_TO_KOREAN.get(risk_key, "안전")
+            now = datetime.now(timezone.utc)
+            now_mono = time.monotonic()
+
+            if self._last_sample_mono is not None:
+                elapsed_sec = max(0.0, now_mono - self._last_sample_mono)
+                if speed_kmh is not None:
+                    self._distance_km += speed_kmh * (elapsed_sec / 3600)
+                elif self._last_point is not None:
+                    delta_km = _haversine_km(self._last_point[0], self._last_point[1], lat, lng)
+                    if delta_km >= MIN_MOVE_KM:
+                        self._distance_km += delta_km
+
+            self._last_point = (lat, lng)
+            self._last_sample_mono = now_mono
+
+            self._points.append({
+                "seq": len(self._points),
+                "lat": lat,
+                "lng": lng,
+                "recorded_at": now.isoformat(),
+                "risk_level": risk_level,
+            })
+
+            if speed_kmh is not None:
+                self._speed_samples.append(speed_kmh)
+                if (
+                    self._last_speed_kmh is not None
+                    and self._last_speed_kmh >= HARD_BRAKE_MIN_SPEED_KMH
+                    and self._last_speed_kmh - speed_kmh >= HARD_BRAKE_DELTA_KMH
+                ):
+                    self._hard_brake_count += 1
+                self._last_speed_kmh = speed_kmh
+
+    def record_event(self, risk_key, object_class, distance_m, ttc_sec, lat, lng):
         with self._lock:
             if not self._active:
                 return
@@ -90,6 +153,8 @@ class RideSession:
                 "object_class": key,
                 "distance_m": distance_m if distance_m is not None else 0.0,
                 "ttc_sec": ttc_sec if ttc_sec is not None else 0.0,
+                "lat": lat if lat is not None else 0.0,
+                "lng": lng if lng is not None else 0.0,
             })
 
     def stop_and_package(self):
@@ -100,6 +165,8 @@ class RideSession:
             self._active = False
             ended_at = datetime.now(timezone.utc)
             duration_sec = max(0, int((ended_at - self._started_at).total_seconds()))
+            avg_speed = sum(self._speed_samples) / len(self._speed_samples) if self._speed_samples else 0.0
+            max_speed = max(self._speed_samples) if self._speed_samples else 0.0
             penalty = sum(SAFETY_PENALTY.get(e["risk_level"], 0) for e in self._events)
             safety_score = max(0, 100 - penalty)
 
@@ -107,8 +174,13 @@ class RideSession:
                 "client_ride_uuid": self._client_ride_uuid,
                 "started_at": self._started_at.isoformat(),
                 "ended_at": ended_at.isoformat(),
+                "distance_km": round(self._distance_km, 3),
                 "duration_sec": duration_sec,
+                "avg_speed_kmh": round(avg_speed, 1),
+                "max_speed_kmh": round(max_speed, 1),
+                "hard_brake_count": self._hard_brake_count,
                 "safety_score": safety_score,
+                "points": self._points,
                 "events": self._events,
             }
 
@@ -117,6 +189,9 @@ class BlePeripheralServer:
     """
     live_state_getter: () -> dict   # app.py의 get_live_state()와 동일한 형태
         {"risk": "safe"|"caution"|"warning"|"danger", "class_name":..., "distance_m":..., "ttc_sec":...}
+
+    GPS는 파이 자체 하드웨어 대신 앱이 폰 GPS를 BLE로 전달해준 값을 쓴다
+    (CHAR_PHONE_GPS_UUID, _on_phone_gps_write 참고).
     """
 
     def __init__(self, live_state_getter, local_name="PM-ADAS-Pi"):
@@ -126,39 +201,85 @@ class BlePeripheralServer:
         self._local_name = local_name
         self._session = RideSession()
         self._periph = None
-        self._live_thread = None
-        self._stop_live = threading.Event()
+        self._sample_thread = None
+        self._stop_sampling = threading.Event()
+        self._phone_gps_lock = threading.Lock()
+        self._phone_gps = {
+            "lat": None,
+            "lng": None,
+            "speed_kmh": 0.0,
+            "fix": False,
+            "updated_at": None,
+        }
+        self._phone_gps_mono = None
 
     def _on_control_write(self, value, options=None):
         command = value[0] if value else None
         if command == CONTROL_START:
             print("▶️  BLE: 주행 시작 신호 수신")
             self._session.start()
-            self._start_live_loop()
+            self._start_sampling()
         elif command == CONTROL_STOP:
             print("⏹  BLE: 주행 종료 신호 수신")
-            self._stop_live_loop()
+            self._stop_sampling_thread()
             payload = self._session.stop_and_package()
             if payload is not None:
                 self._send_ride_data(payload)
             else:
                 print("⚠️  종료 신호를 받았지만 진행 중이던 라이딩이 없습니다 (재전송 요청일 수 있음)")
 
-    def _start_live_loop(self):
-        self._stop_live.clear()
-        self._live_thread = threading.Thread(target=self._live_loop, daemon=True)
-        self._live_thread.start()
+    def _on_phone_gps_write(self, value, options=None):
+        """앱에서 BLE로 전달한 최신 스마트폰 GPS 값을 저장한다."""
+        try:
+            raw = bytes(value).decode("utf-8")
+            data = json.loads(raw)
+            lat = data.get("lat")
+            lng = data.get("lng")
+            speed_kmh = data.get("speed_kmh", 0.0)
 
-    def _stop_live_loop(self):
-        self._stop_live.set()
-        if self._live_thread is not None:
-            self._live_thread.join(timeout=2)
+            if lat is None or lng is None:
+                return
 
-    def _live_loop(self):
-        """주행 중 카메라 위험도를 주기적으로 확인 — 이벤트 기록 + 실시간 상태 알림."""
-        while not self._stop_live.is_set() and self._session.is_active():
+            with self._phone_gps_lock:
+                self._phone_gps = {
+                    "lat": float(lat),
+                    "lng": float(lng),
+                    "speed_kmh": max(0.0, float(speed_kmh or 0.0)),
+                    "fix": True,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self._phone_gps_mono = time.monotonic()
+        except Exception as e:
+            print(f"⚠️ 폰 GPS BLE 데이터 처리 실패: {e}", flush=True)
+
+    def _get_phone_gps(self):
+        # 연결이 끊긴 동안 마지막 값을 계속 재사용하면, 예전 속도로 계속 이동한 것처럼
+        # 거리가 거짓으로 누적되는 문제가 있었음 (PHONE_GPS_STALE_SEC 보다 오래되면 픽스 무효 처리).
+        with self._phone_gps_lock:
+            if self._phone_gps_mono is None:
+                return dict(self._phone_gps)
+            if time.monotonic() - self._phone_gps_mono > PHONE_GPS_STALE_SEC:
+                return {**self._phone_gps, "fix": False}
+            return dict(self._phone_gps)
+
+    def _start_sampling(self):
+        self._stop_sampling.clear()
+        self._sample_thread = threading.Thread(target=self._sampling_loop, daemon=True)
+        self._sample_thread.start()
+
+    def _stop_sampling_thread(self):
+        self._stop_sampling.set()
+        if self._sample_thread is not None:
+            self._sample_thread.join(timeout=2)
+
+    def _sampling_loop(self):
+        while not self._stop_sampling.is_set() and self._session.is_active():
+            gps = self._get_phone_gps()
             state = self._live_state_getter() or {}
             risk_key = state.get("risk", "safe")
+
+            if gps.get("fix"):
+                self._session.record_sample(gps.get("lat"), gps.get("lng"), gps.get("speed_kmh"), risk_key)
 
             if risk_key in ("warning", "danger"):
                 self._session.record_event(
@@ -166,10 +287,12 @@ class BlePeripheralServer:
                     state.get("class_name"),
                     state.get("distance_m"),
                     state.get("ttc_sec"),
+                    gps.get("lat"),
+                    gps.get("lng"),
                 )
 
             self._update_live_status_characteristic(risk_key)
-            time.sleep(LIVE_STATUS_INTERVAL_SEC)
+            time.sleep(SAMPLE_INTERVAL_SEC)
 
     def _update_live_status_characteristic(self, risk_key):
         rank = {"safe": 0, "caution": 1, "warning": 2, "danger": 3}.get(risk_key, 0)
@@ -218,6 +341,12 @@ class BlePeripheralServer:
             srv_id=1, chr_id=3, uuid=CHAR_RIDE_DATA_UUID,
             value=[], notifying=False,
             flags=["notify"],
+        )
+        self._periph.add_characteristic(
+            srv_id=1, chr_id=4, uuid=CHAR_PHONE_GPS_UUID,
+            value=[], notifying=False,
+            flags=["write-without-response"],
+            write_callback=self._on_phone_gps_write,
         )
 
         print(f"📡 BLE 주변장치 시작: {self._local_name} ({adapter_address})")
