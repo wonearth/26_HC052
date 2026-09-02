@@ -96,6 +96,9 @@ export default function ReportScreen({ navigation }: Props) {
         data={ridesForDate}
         keyExtractor={(item) => String(item.id)}
         contentContainerStyle={{ gap: 10, paddingBottom: 24 }}
+        ListEmptyComponent={
+          selectedDate ? <Text style={styles.emptyText}>이 날은 라이딩이 없어요</Text> : null
+        }
         renderItem={({ item }) => (
           <Pressable
             style={styles.rideCard}
@@ -127,6 +130,7 @@ const styles = StyleSheet.create({
   dayNumber: { color: colors.text, fontSize: 13 },
   dot: { width: 6, height: 6, borderRadius: 3 },
   sectionTitle: { color: colors.textMuted, fontSize: 13, marginTop: 16, marginBottom: 8 },
+  emptyText: { color: colors.textMuted, fontSize: 13, paddingVertical: 20, textAlign: "center" },
   rideCard: {
     backgroundColor: colors.surface,
     borderRadius: 14,

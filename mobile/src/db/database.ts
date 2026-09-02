@@ -48,7 +48,42 @@ export async function initDb(): Promise<void> {
       lat REAL NOT NULL,
       lng REAL NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
   `);
+}
+
+const NICKNAME_KEY = "nickname";
+
+export async function getNickname(): Promise<string | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    `SELECT value FROM app_settings WHERE key = ?`,
+    [NICKNAME_KEY]
+  );
+  return row?.value ?? null;
+}
+
+export async function setNickname(nickname: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    `INSERT INTO app_settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [NICKNAME_KEY, nickname]
+  );
+}
+
+/** 라이딩 기록 전체 삭제 (초기화) — 닉네임 등 다른 설정은 그대로 둔다. */
+export async function clearAllRides(): Promise<void> {
+  const db = await getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM ride_events`);
+    await db.runAsync(`DELETE FROM ride_points`);
+    await db.runAsync(`DELETE FROM rides`);
+  });
 }
 
 /** client_ride_uuid가 이미 있으면 그 ride_id를 그대로 반환 (BLE 재시도로 중복 저장되는 것 방지) */
