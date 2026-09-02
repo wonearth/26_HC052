@@ -20,6 +20,7 @@ export default function RideScreen({ route, navigation }: Props) {
   const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
   const [imuStatus, setImuStatus] = useState<ImuStatus | null>(null);
   const [currentSpeedKmh, setCurrentSpeedKmh] = useState(0);
+  const [currentDistanceKm, setCurrentDistanceKm] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const liveStatusSubscriptionRef = useRef<{ remove: () => void } | null>(null);
   const imuSubscriptionRef = useRef<{ remove: () => void } | null>(null);
@@ -75,6 +76,7 @@ export default function RideScreen({ route, navigation }: Props) {
       await trackerRef.current.start({
         getCurrentRisk: () => currentRiskRef.current,
         onSpeedUpdate: setCurrentSpeedKmh,
+        onDistanceUpdate: setCurrentDistanceKm,
       });
 
       try {
@@ -86,6 +88,7 @@ export default function RideScreen({ route, navigation }: Props) {
 
       setPhase("riding");
       setElapsedSec(0);
+      setCurrentDistanceKm(0);
       imuEventsRef.current = [];
       lastImpactRef.current = false;
       lastRolloverRef.current = false;
@@ -172,14 +175,22 @@ export default function RideScreen({ route, navigation }: Props) {
       )}
 
       <Text style={styles.timer}>{formatElapsed(elapsedSec)}</Text>
-      {phase === "riding" && <Text style={styles.speed}>{currentSpeedKmh.toFixed(1)} km/h</Text>}
-      <Text style={styles.mac}>파이 {mac}</Text>
-
       {phase === "riding" && (
+        <Text style={styles.speed}>
+          {currentSpeedKmh.toFixed(1)} km/h · {currentDistanceKm.toFixed(2)} km
+        </Text>
+      )}
+
+      {(phase === "connected" || phase === "riding") && (
+        <View style={styles.connectedBadge}>
+          <View style={styles.connectedDot} />
+          <Text style={styles.connectedText}>파이 연결됨</Text>
+        </View>
+      )}
+
+      {phase === "riding" && imuStatus?.connected && (
         <Text style={styles.imuInfo}>
-          {imuStatus?.connected
-            ? `IMU 연결됨 · 기울기 ${imuStatus.roll.toFixed(0)}° / ${imuStatus.pitch.toFixed(0)}°`
-            : "IMU 연결 대기 중..."}
+          IMU 연결됨 · 기울기 {imuStatus.roll.toFixed(0)}° / {imuStatus.pitch.toFixed(0)}°
         </Text>
       )}
 
@@ -225,8 +236,10 @@ const styles = StyleSheet.create({
   banner: { position: "absolute", top: 0, left: 0, right: 0, paddingTop: 56, paddingBottom: 16, alignItems: "center" },
   bannerText: { color: "#04222b", fontWeight: "800", fontSize: 18 },
   timer: { color: colors.text, fontSize: 48, fontWeight: "700" },
-  speed: { color: colors.accent, fontSize: 20, fontWeight: "700" },
-  mac: { color: colors.textMuted, fontSize: 13 },
+  speed: { color: colors.accent, fontSize: 18, fontWeight: "700" },
+  connectedBadge: { flexDirection: "row", alignItems: "center", gap: 6 },
+  connectedDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.safe },
+  connectedText: { color: colors.textMuted, fontSize: 13 },
   imuInfo: { color: colors.textMuted, fontSize: 12 },
   startButton: { backgroundColor: colors.accent, paddingVertical: 18, paddingHorizontal: 48, borderRadius: 100 },
   startButtonText: { color: "#04222b", fontWeight: "800", fontSize: 18 },
