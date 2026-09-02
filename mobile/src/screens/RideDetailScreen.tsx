@@ -6,6 +6,7 @@ import type { RootStackParamList } from "../navigation/types";
 import { getRideDetail } from "../db/database";
 import type { RideEvent, RidePoint, RideSummary } from "../types/ride";
 import { colors, riskColor } from "../theme/colors";
+import { formatObjectClass } from "../utils/eventLabel";
 import { buildRideMapHtml } from "../map/buildRideMapHtml";
 
 type Props = NativeStackScreenProps<RootStackParamList, "RideDetail">;
@@ -54,7 +55,7 @@ export default function RideDetailScreen({ route }: Props) {
         <View key={i} style={styles.eventRow}>
           <View style={[styles.eventDot, { backgroundColor: riskColor[event.risk_level] }]} />
           <Text style={styles.eventText}>
-            {event.risk_level} · {event.object_class} · {event.distance_m.toFixed(1)}m ·{" "}
+            {event.risk_level} · {formatObjectClass(event.object_class)} · {event.distance_m.toFixed(1)}m ·{" "}
             {new Date(event.occurred_at).toLocaleTimeString()}
           </Text>
         </View>
