@@ -3,6 +3,7 @@ import { PermissionsAndroid, Platform } from "react-native";
 import { base64Decode, base64Encode } from "./base64";
 import {
   CHARACTERISTIC_CONTROL,
+  CHARACTERISTIC_IMU,
   CHARACTERISTIC_LIVE_STATUS,
   CHARACTERISTIC_RIDE_DATA,
   SERVICE_UUID,
@@ -12,6 +13,19 @@ import type { PiRideSummary } from "../types/ride";
 export interface LiveStatus {
   riskLevel: number;
   eventFlag: number;
+}
+
+/** IMU 담당 팀원이 정의한 스키마 그대로 (BLE_PROTOCOL.md 2-4 참고) */
+export interface ImuStatus {
+  connected: boolean;
+  roll: number;
+  pitch: number;
+  ax: number;
+  ay: number;
+  az: number;
+  acc_magnitude: number;
+  impact: boolean;
+  rollover: boolean;
 }
 
 const RIDE_DATA_CHUNK_TIMEOUT_MS = 5000;
@@ -105,6 +119,26 @@ export class BleService {
         const bytes = base64Decode(characteristic.value);
         if (bytes.length < 2) return;
         onUpdate({ riskLevel: bytes[0], eventFlag: bytes[1] });
+      }
+    );
+  }
+
+  /** JSON 문자열 그대로 오는 IMU 값 구독 (청크 분할 없음, BLE_PROTOCOL.md 2-4 참고) */
+  subscribeImu(onUpdate: (status: ImuStatus) => void): Subscription {
+    const device = this.requireDevice();
+    return this.manager.monitorCharacteristicForDevice(
+      device.id,
+      SERVICE_UUID,
+      CHARACTERISTIC_IMU,
+      (error, characteristic) => {
+        if (error || !characteristic?.value) return;
+        try {
+          const bytes = base64Decode(characteristic.value);
+          const json = new TextDecoder().decode(bytes);
+          onUpdate(JSON.parse(json) as ImuStatus);
+        } catch {
+          // 파싱 실패한 패킷은 무시하고 다음 알림을 기다림
+        }
       }
     );
   }

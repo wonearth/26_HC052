@@ -40,6 +40,7 @@ b4ecbebf-e498-4421-9b90-830fdef8c16a
 | Control (제어) | `8ea73ee0-6fbd-4a5b-a121-e249ba53033a` | Write (응답 확인) | 앱 → 파이 |
 | Live Status (실시간 상태) | `0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e` | Notify | 파이 → 앱 |
 | Ride Data (주행기록 전송) | `10a90785-c204-4b26-aeac-56f0336b9f14` | Notify | 파이 → 앱 |
+| IMU (기울기/충돌/전복) | `6f8d7b21-3e2a-4f9c-a6d1-5b7c8e9f1023` | Notify | 파이 → 앱 |
 
 (v1에 있던 Phone GPS characteristic은 더 이상 안 씀 — 폰이 파이한테 GPS를 안 보냄)
 
@@ -77,6 +78,35 @@ b4ecbebf-e498-4421-9b90-830fdef8c16a
 - **재전송 규칙**: 앱이 일정 시간(예: 5초) 내 다음 seq를 못 받으면, Control characteristic에
   `0x02`(종료)를 다시 써서 파이에게 처음부터 재전송을 요청함. 파이는 매번 0x02를 받을 때마다
   현재 누적된 이벤트를 처음(seq=0)부터 다시 보냄.
+
+### 2-4. IMU (기울기/충돌/전복) — 파이가 알림, IMU 담당 팀원 구현
+
+주행 중 IMU 센서값을 JSON 문자열로 그대로 notify (청크 분할 없음 — 한 패킷에 들어가는 크기).
+갱신 주기는 현재 2초 (실시간성이 더 필요하면 조절 가능).
+
+```json
+{
+  "connected": true,
+  "roll": 0.0,
+  "pitch": 0.0,
+  "ax": 0.0,
+  "ay": 0.0,
+  "az": 0.0,
+  "acc_magnitude": 0.0,
+  "impact": false,
+  "rollover": false
+}
+```
+
+- `connected`: IMU 센서 연결 여부
+- `roll`/`pitch`: 기울기 (degree)
+- `ax`/`ay`/`az`: 각 축 가속도
+- `acc_magnitude`: 전체 가속도 크기
+- `impact`: 충돌 감지 (센서값 보정/기준은 IMU 담당 쪽에서 처리, 앱은 받은 값을 그대로 신뢰)
+- `rollover`: 전복 감지
+
+앱은 `impact`/`rollover`가 `true`로 바뀌는 순간을 위험 이벤트로 기록해서(장소는 그 순간 폰
+GPS 기록과 매칭, 3-3 참고) 최종 라이딩 데이터의 `events`에 카메라 이벤트와 함께 포함시킨다.
 
 ## 3. 데이터 스키마
 
