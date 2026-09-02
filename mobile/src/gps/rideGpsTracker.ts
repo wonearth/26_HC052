@@ -31,10 +31,12 @@ export class RideGpsTracker {
   private hardBrakeCount = 0;
   private getCurrentRisk: () => RiskLevel = () => "안전";
   private onSpeedUpdate?: (speedKmh: number) => void;
+  private onDistanceUpdate?: (distanceKm: number) => void;
 
   async start(options: {
     getCurrentRisk?: () => RiskLevel;
     onSpeedUpdate?: (speedKmh: number) => void;
+    onDistanceUpdate?: (distanceKm: number) => void;
   } = {}): Promise<void> {
     const permission = await Location.requestForegroundPermissionsAsync();
     if (permission.status !== "granted") {
@@ -54,6 +56,7 @@ export class RideGpsTracker {
     this.hardBrakeCount = 0;
     this.getCurrentRisk = options.getCurrentRisk ?? (() => "안전");
     this.onSpeedUpdate = options.onSpeedUpdate;
+    this.onDistanceUpdate = options.onDistanceUpdate;
 
     this.subscription = await Location.watchPositionAsync(
       { accuracy: Location.Accuracy.High, timeInterval: 1000, distanceInterval: 1 },
@@ -91,6 +94,7 @@ export class RideGpsTracker {
     });
 
     this.onSpeedUpdate?.(speedKmh);
+    this.onDistanceUpdate?.(this.distanceKm);
   }
 
   stop(): void {
