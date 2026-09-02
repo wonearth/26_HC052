@@ -34,6 +34,7 @@ SERVICE_UUID = "b4ecbebf-e498-4421-9b90-830fdef8c16a"
 CHAR_CONTROL_UUID = "8ea73ee0-6fbd-4a5b-a121-e249ba53033a"
 CHAR_LIVE_STATUS_UUID = "0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e"
 CHAR_RIDE_DATA_UUID = "10a90785-c204-4b26-aeac-56f0336b9f14"
+CHAR_IMU_STATUS_UUID = "6f8d7b21-3e2a-4f9c-a6d1-5b7c8e9f1023"
 
 CONTROL_START = 0x01
 CONTROL_STOP = 0x02
@@ -117,12 +118,16 @@ class BlePeripheralServer:
     """
     live_state_getter: () -> dict   # app.py의 get_live_state()와 동일한 형태
         {"risk": "safe"|"caution"|"warning"|"danger", "class_name":..., "distance_m":..., "ttc_sec":...}
+    imu_getter: () -> dict | None   # imu_sensor.get_imu_state()와 동일한 형태 (없으면 IMU 특성 갱신 생략)
+        {"connected":..., "roll":..., "pitch":..., "ax":..., "ay":..., "az":...,
+         "acc_magnitude":..., "impact":..., "rollover":...}
     """
 
-    def __init__(self, live_state_getter, local_name="PM-ADAS-Pi"):
+    def __init__(self, live_state_getter, imu_getter=None, local_name="PM-ADAS-Pi"):
         if not _BLUEZERO_AVAILABLE:
             raise RuntimeError("bluezero가 설치되어 있지 않습니다 (pip3 install bluezero)")
         self._live_state_getter = live_state_getter
+        self._imu_getter = imu_getter
         self._local_name = local_name
         self._session = RideSession()
         self._periph = None
@@ -169,6 +174,7 @@ class BlePeripheralServer:
                 )
 
             self._update_live_status_characteristic(risk_key)
+            self._update_imu_status_characteristic()
             time.sleep(LIVE_STATUS_INTERVAL_SEC)
 
     def _update_live_status_characteristic(self, risk_key):
@@ -177,6 +183,28 @@ class BlePeripheralServer:
             self._periph.characteristics[1].set_value([rank, 0])
         except Exception as e:
             print(f"⚠️  실시간 상태 알림 실패: {e}")
+
+    def _update_imu_status_characteristic(self):
+        """최신 IMU 상태를 JSON으로 BLE notify 한다 (imu_getter가 없으면 아무 것도 안 함)."""
+        if self._imu_getter is None:
+            return
+        try:
+            imu = self._imu_getter() or {}
+            payload = {
+                "connected": bool(imu.get("connected", False)),
+                "roll": imu.get("roll"),
+                "pitch": imu.get("pitch"),
+                "ax": imu.get("ax"),
+                "ay": imu.get("ay"),
+                "az": imu.get("az"),
+                "acc_magnitude": imu.get("acc_magnitude"),
+                "impact": bool(imu.get("impact", False)),
+                "rollover": bool(imu.get("rollover", False)),
+            }
+            data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self._periph.characteristics[3].set_value(list(data))
+        except Exception as e:
+            print(f"⚠️  IMU 상태 알림 실패: {e}")
 
     def _send_ride_data(self, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -216,6 +244,11 @@ class BlePeripheralServer:
         )
         self._periph.add_characteristic(
             srv_id=1, chr_id=3, uuid=CHAR_RIDE_DATA_UUID,
+            value=[], notifying=False,
+            flags=["notify"],
+        )
+        self._periph.add_characteristic(
+            srv_id=1, chr_id=4, uuid=CHAR_IMU_STATUS_UUID,
             value=[], notifying=False,
             flags=["notify"],
         )

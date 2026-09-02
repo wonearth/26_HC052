@@ -14,6 +14,7 @@ from collections import deque
 from picamera2 import Picamera2
 
 import ble_peripheral
+import imu_sensor
 
 # =========================
 # 설정값
@@ -703,11 +704,18 @@ def main():
     detection_thread.start()
     print("4. 감지 스레드 시작!")
 
+    imu_thread = threading.Thread(target=imu_sensor.imu_reader_loop, daemon=True)
+    imu_thread.start()
+    print("5. IMU 사고 감지 스레드 시작!")
+
     try:
-        ble_server = ble_peripheral.BlePeripheralServer(live_state_getter=get_live_state)
+        ble_server = ble_peripheral.BlePeripheralServer(
+            live_state_getter=get_live_state,
+            imu_getter=imu_sensor.get_imu_state,
+        )
         ble_thread = threading.Thread(target=ble_server.start, daemon=True)
         ble_thread.start()
-        print("5. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결, GPS는 폰에서 받음)")
+        print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결, GPS는 폰에서 받음)")
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
 
