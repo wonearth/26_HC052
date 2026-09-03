@@ -4,10 +4,12 @@ import * as Location from "expo-location";
 import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RootStackParamList } from "../navigation/types";
-import { getNickname, setNickname, clearAllRides } from "../db/database";
+import { changeNickname, changePassword, clearAllRides, deleteAccount, logOut } from "../db/database";
 import { exportRidesAsCsv } from "../export/exportRidesCsv";
 import { colors } from "../theme/colors";
+import { useAuth } from "../auth/AuthContext";
 import NicknameModal from "../components/NicknameModal";
+import ChangePasswordModal from "../components/ChangePasswordModal";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require("../../package.json");
 
@@ -19,8 +21,9 @@ interface PermissionRow {
 }
 
 export default function SettingsScreen({}: Props) {
-  const [nickname, setNicknameState] = useState<string | null>(null);
+  const { user, setUser, refresh } = useAuth();
   const [nicknameModalVisible, setNicknameModalVisible] = useState(false);
+  const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [permissions, setPermissions] = useState<PermissionRow[]>([]);
   const [exporting, setExporting] = useState(false);
 
@@ -44,7 +47,6 @@ export default function SettingsScreen({}: Props) {
 
   useFocusEffect(
     useCallback(() => {
-      getNickname().then(setNicknameState);
       loadPermissions();
     }, [loadPermissions])
   );
@@ -58,9 +60,21 @@ export default function SettingsScreen({}: Props) {
   };
 
   const handleSaveNickname = async (value: string) => {
-    await setNickname(value);
-    setNicknameState(value);
-    setNicknameModalVisible(false);
+    if (!user) return;
+    try {
+      await changeNickname(user.id, value);
+      setUser({ ...user, nickname: value });
+      setNicknameModalVisible(false);
+    } catch (e) {
+      Alert.alert("변경 실패", e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleChangePassword = async (currentPassword: string, newPassword: string) => {
+    if (!user) return;
+    await changePassword(user.id, currentPassword, newPassword);
+    setPasswordModalVisible(false);
+    Alert.alert("변경 완료", "비밀번호가 변경됐어요.");
   };
 
   const handleExport = async () => {
@@ -92,10 +106,43 @@ export default function SettingsScreen({}: Props) {
     );
   };
 
+  const handleLogout = () => {
+    Alert.alert("로그아웃", "로그아웃 할까요?", [
+      { text: "취소", style: "cancel" },
+      {
+        text: "로그아웃",
+        onPress: async () => {
+          await logOut();
+          await refresh();
+        },
+      },
+    ]);
+  };
+
+  const handleDeleteAccount = () => {
+    if (!user) return;
+    Alert.alert(
+      "계정 삭제",
+      "계정을 삭제할까요? 저장된 라이딩 기록은 계정과 별개로 이 폰에 그대로 남아요.",
+      [
+        { text: "취소", style: "cancel" },
+        {
+          text: "삭제",
+          style: "destructive",
+          onPress: async () => {
+            await deleteAccount(user.id);
+            await refresh();
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, gap: 20 }}>
-      <Section title="프로필">
-        <Row label="닉네임" value={nickname ?? "설정 안 함"} onPress={() => setNicknameModalVisible(true)} />
+      <Section title="계정">
+        <Row label="닉네임" value={user?.nickname ?? "-"} onPress={() => setNicknameModalVisible(true)} />
+        <Row label="비밀번호" value="변경" onPress={() => setPasswordModalVisible(true)} />
       </Section>
 
       <Section title="권한 상태">
@@ -129,11 +176,25 @@ export default function SettingsScreen({}: Props) {
         <Row label="버전" value={pkg.version} />
       </Section>
 
+      <View style={styles.bottomActions}>
+        <Pressable style={styles.outlineButton} onPress={handleLogout}>
+          <Text style={styles.outlineButtonText}>로그아웃</Text>
+        </Pressable>
+        <Pressable style={styles.dangerButton} onPress={handleDeleteAccount}>
+          <Text style={styles.dangerButtonText}>계정 삭제</Text>
+        </Pressable>
+      </View>
+
       <NicknameModal
         visible={nicknameModalVisible}
-        initialValue={nickname ?? ""}
+        initialValue={user?.nickname ?? ""}
         onSave={handleSaveNickname}
         onClose={() => setNicknameModalVisible(false)}
+      />
+      <ChangePasswordModal
+        visible={passwordModalVisible}
+        onSave={handleChangePassword}
+        onClose={() => setPasswordModalVisible(false)}
       />
     </ScrollView>
   );
@@ -186,4 +247,5 @@ const styles = StyleSheet.create({
   outlineButtonText: { color: colors.accent, fontSize: 14, fontWeight: "700" },
   dangerButton: { margin: 8, marginTop: 0, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   dangerButtonText: { color: colors.danger, fontSize: 14, fontWeight: "700" },
+  bottomActions: { gap: 10 },
 });

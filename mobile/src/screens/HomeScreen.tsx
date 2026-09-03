@@ -2,43 +2,23 @@ import { useCallback, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
-import { getNickname, getSummaryStats, saveRide, setNickname, type SummaryStats } from "../db/database";
+import { getSummaryStats, saveRide, type SummaryStats } from "../db/database";
 import { generateMockRide } from "../mock/mockRide";
 import { colors } from "../theme/colors";
 import type { MainTabScreenProps } from "../navigation/types";
-import NicknameModal from "../components/NicknameModal";
+import { useAuth } from "../auth/AuthContext";
 
 type Props = MainTabScreenProps<"Home">;
 
-// 닉네임 입력을 "나중에"로 넘겼을 때, 홈 탭에 다시 올 때마다 팝업이 또 뜨지 않도록
-// 이 세션에서 한 번 물어봤는지만 기억해둔다 (앱을 껐다 켜면 다시 물어봄).
-let hasPromptedNicknameThisSession = false;
-
 export default function HomeScreen({ navigation }: Props) {
+  const { user } = useAuth();
   const [stats, setStats] = useState<SummaryStats | null>(null);
-  const [nickname, setNicknameState] = useState<string | null>(null);
-  const [checkedNickname, setCheckedNickname] = useState(false);
-  const [nicknameModalVisible, setNicknameModalVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       getSummaryStats().then(setStats).catch(() => {});
-      getNickname().then((n) => {
-        setNicknameState(n);
-        setCheckedNickname(true);
-        if (!n && !hasPromptedNicknameThisSession) {
-          hasPromptedNicknameThisSession = true;
-          setNicknameModalVisible(true);
-        }
-      });
     }, [])
   );
-
-  const handleSaveNickname = async (value: string) => {
-    await setNickname(value);
-    setNicknameState(value);
-    setNicknameModalVisible(false);
-  };
 
   return (
     <View style={styles.container}>
@@ -49,13 +29,7 @@ export default function HomeScreen({ navigation }: Props) {
         </Pressable>
       </View>
 
-      {checkedNickname && (
-        <Pressable onPress={() => setNicknameModalVisible(true)}>
-          <Text style={styles.greeting}>
-            {nickname ? `${nickname}님, 오늘도 안전 라이딩!` : "라이더님, 오늘도 안전 라이딩!"}
-          </Text>
-        </Pressable>
-      )}
+      <Text style={styles.greeting}>{user ? `${user.nickname}님, 오늘도 안전 라이딩!` : "오늘도 안전 라이딩!"}</Text>
 
       <View style={styles.statsRow}>
         <Stat label="총 라이딩" value={String(stats?.rideCount ?? 0)} />
@@ -78,13 +52,6 @@ export default function HomeScreen({ navigation }: Props) {
           <Text style={styles.devButtonText}>(개발용) 더미 라이딩으로 화면 확인</Text>
         </Pressable>
       )}
-
-      <NicknameModal
-        visible={nicknameModalVisible}
-        initialValue={nickname ?? ""}
-        onSave={handleSaveNickname}
-        onClose={() => setNicknameModalVisible(false)}
-      />
     </View>
   );
 }

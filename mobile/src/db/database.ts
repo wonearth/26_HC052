@@ -1,4 +1,5 @@
 import * as SQLite from "expo-sqlite";
+import { hashPassword, verifyPassword } from "../auth/hash";
 import type { RideEvent, RidePayload, RidePoint, RideSummary } from "../types/ride";
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -53,27 +54,124 @@ export async function initDb(): Promise<void> {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nickname TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 }
 
-const NICKNAME_KEY = "nickname";
+const CURRENT_USER_KEY = "current_user_id";
 
-export async function getNickname(): Promise<string | null> {
-  const db = await getDb();
-  const row = await db.getFirstAsync<{ value: string }>(
-    `SELECT value FROM app_settings WHERE key = ?`,
-    [NICKNAME_KEY]
-  );
-  return row?.value ?? null;
+export interface AuthUser {
+  id: number;
+  nickname: string;
 }
 
-export async function setNickname(nickname: string): Promise<void> {
+async function setCurrentUserId(userId: number | null): Promise<void> {
   const db = await getDb();
+  if (userId === null) {
+    await db.runAsync(`DELETE FROM app_settings WHERE key = ?`, [CURRENT_USER_KEY]);
+    return;
+  }
   await db.runAsync(
     `INSERT INTO app_settings (key, value) VALUES (?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    [NICKNAME_KEY, nickname]
+    [CURRENT_USER_KEY, String(userId)]
   );
+}
+
+/** 로그인 상태면 그 사용자를, 아니면 null을 반환. 앱 시작 시 어느 화면으로 갈지 이걸로 판단한다. */
+export async function getCurrentUser(): Promise<AuthUser | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ value: string }>(
+    `SELECT value FROM app_settings WHERE key = ?`,
+    [CURRENT_USER_KEY]
+  );
+  if (!row) return null;
+  const userId = Number(row.value);
+  const user = await db.getFirstAsync<AuthUser>(`SELECT id, nickname FROM users WHERE id = ?`, [userId]);
+  return user ?? null;
+}
+
+export async function isNicknameTaken(nickname: string, excludeUserId?: number): Promise<boolean> {
+  const db = await getDb();
+  const row = excludeUserId
+    ? await db.getFirstAsync<{ id: number }>(`SELECT id FROM users WHERE nickname = ? AND id != ?`, [
+        nickname,
+        excludeUserId,
+      ])
+    : await db.getFirstAsync<{ id: number }>(`SELECT id FROM users WHERE nickname = ?`, [nickname]);
+  return row != null;
+}
+
+/** 로컬 전용 앱이라 이 폰 안에서만 닉네임이 겹치지 않으면 됨 — 서버에 공유되는 계정이 아님. */
+export async function signUp(nickname: string, password: string): Promise<AuthUser> {
+  if (await isNicknameTaken(nickname)) {
+    throw new Error("이미 사용 중인 닉네임이에요.");
+  }
+  const db = await getDb();
+  const { hash, salt } = await hashPassword(password);
+  const result = await db.runAsync(
+    `INSERT INTO users (nickname, password_hash, password_salt) VALUES (?, ?, ?)`,
+    [nickname, hash, salt]
+  );
+  const userId = result.lastInsertRowId;
+  await setCurrentUserId(userId);
+  return { id: userId, nickname };
+}
+
+export async function logIn(nickname: string, password: string): Promise<AuthUser> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ id: number; nickname: string; password_hash: string; password_salt: string }>(
+    `SELECT id, nickname, password_hash, password_salt FROM users WHERE nickname = ?`,
+    [nickname]
+  );
+  if (!row || !(await verifyPassword(password, row.password_salt, row.password_hash))) {
+    throw new Error("닉네임 또는 비밀번호가 올바르지 않아요.");
+  }
+  await setCurrentUserId(row.id);
+  return { id: row.id, nickname: row.nickname };
+}
+
+export async function logOut(): Promise<void> {
+  await setCurrentUserId(null);
+}
+
+export async function changeNickname(userId: number, newNickname: string): Promise<void> {
+  if (await isNicknameTaken(newNickname, userId)) {
+    throw new Error("이미 사용 중인 닉네임이에요.");
+  }
+  const db = await getDb();
+  await db.runAsync(`UPDATE users SET nickname = ? WHERE id = ?`, [newNickname, userId]);
+}
+
+export async function changePassword(
+  userId: number,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ password_hash: string; password_salt: string }>(
+    `SELECT password_hash, password_salt FROM users WHERE id = ?`,
+    [userId]
+  );
+  if (!row || !(await verifyPassword(currentPassword, row.password_salt, row.password_hash))) {
+    throw new Error("현재 비밀번호가 올바르지 않아요.");
+  }
+  const { hash, salt } = await hashPassword(newPassword);
+  await db.runAsync(`UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?`, [hash, salt, userId]);
+}
+
+/** 계정만 삭제하고 로그아웃 — 라이딩 기록은 계정과 분리되어 있어서 그대로 남는다. */
+export async function deleteAccount(userId: number): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(`DELETE FROM users WHERE id = ?`, [userId]);
+  await setCurrentUserId(null);
 }
 
 /** 라이딩 기록 전체 삭제 (초기화) — 닉네임 등 다른 설정은 그대로 둔다. */

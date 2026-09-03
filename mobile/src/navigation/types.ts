@@ -8,6 +8,7 @@ export type MainTabParamList = {
 };
 
 export type RootStackParamList = {
+  Login: undefined;
   Main: undefined;
   Scan: undefined;
   Ride: { mac: string };
