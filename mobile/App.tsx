@@ -7,7 +7,6 @@ import MainTabs from "./src/navigation/MainTabs";
 import ScanScreen from "./src/screens/ScanScreen";
 import RideScreen from "./src/screens/RideScreen";
 import RideDetailScreen from "./src/screens/RideDetailScreen";
-import SettingsScreen from "./src/screens/SettingsScreen";
 import LoginScreen from "./src/screens/LoginScreen";
 import type { RootStackParamList } from "./src/navigation/types";
 import { initDb } from "./src/db/database";
@@ -54,7 +53,6 @@ function RootNavigator() {
           <Stack.Screen name="Scan" component={ScanScreen} options={{ title: "QR 스캔" }} />
           <Stack.Screen name="Ride" component={RideScreen} options={{ title: "주행 중", headerBackVisible: false }} />
           <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: "라이딩 상세" }} />
-          <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: "설정" }} />
         </>
       ) : (
         <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
