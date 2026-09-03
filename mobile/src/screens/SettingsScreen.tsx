@@ -2,8 +2,7 @@ import { useCallback, useState } from "react";
 import { View, Text, Pressable, StyleSheet, ScrollView, Alert, ActivityIndicator, Linking, Platform, PermissionsAndroid } from "react-native";
 import * as Location from "expo-location";
 import { useFocusEffect } from "@react-navigation/native";
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import type { RootStackParamList } from "../navigation/types";
+import type { MainTabScreenProps } from "../navigation/types";
 import { changeNickname, changePassword, clearAllRides, deleteAccount, logOut } from "../db/database";
 import { exportRidesAsCsv } from "../export/exportRidesCsv";
 import { colors } from "../theme/colors";
@@ -14,7 +13,7 @@ import DeleteAccountModal from "../components/DeleteAccountModal";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require("../../package.json");
 
-type Props = NativeStackScreenProps<RootStackParamList, "Settings">;
+type Props = MainTabScreenProps<"Settings">;
 
 interface PermissionRow {
   label: string;
@@ -129,7 +128,9 @@ export default function SettingsScreen({}: Props) {
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, gap: 20 }}>
+    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingTop: 24, gap: 20 }}>
+      <Text style={styles.title}>설정</Text>
+
       <Section title="계정">
         <Row label="닉네임" value={user?.nickname ?? "-"} onPress={() => setNicknameModalVisible(true)} />
         <Row label="비밀번호" value="변경" onPress={() => setPasswordModalVisible(true)} />
@@ -219,6 +220,7 @@ function Row({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
+  title: { color: colors.text, fontSize: 26, fontWeight: "800" },
   section: { gap: 8 },
   sectionTitle: { color: colors.textMuted, fontSize: 12, fontWeight: "700" },
   sectionCard: {

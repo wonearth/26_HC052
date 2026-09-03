@@ -5,6 +5,7 @@ import type { CompositeScreenProps } from "@react-navigation/native";
 export type MainTabParamList = {
   Home: undefined;
   Report: undefined;
+  Settings: undefined;
 };
 
 export type RootStackParamList = {
@@ -13,7 +14,6 @@ export type RootStackParamList = {
   Scan: undefined;
   Ride: { mac: string };
   RideDetail: { rideId: number };
-  Settings: undefined;
 };
 
 export type MainTabScreenProps<T extends keyof MainTabParamList> = CompositeScreenProps<

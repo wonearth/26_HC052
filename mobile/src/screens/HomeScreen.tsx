@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { getSummaryStats, saveRide, type SummaryStats } from "../db/database";
 import { generateMockRide } from "../mock/mockRide";
@@ -24,9 +23,6 @@ export default function HomeScreen({ navigation }: Props) {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>PM ADAS</Text>
-        <Pressable onPress={() => navigation.navigate("Settings")} hitSlop={12}>
-          <Ionicons name="settings-outline" size={24} color={colors.textMuted} />
-        </Pressable>
       </View>
 
       <Text style={styles.greeting}>{user ? `${user.nickname}님, 오늘도 안전 라이딩!` : "오늘도 안전 라이딩!"}</Text>
@@ -67,7 +63,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background, padding: 20, paddingTop: 24, gap: 16 },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  header: { flexDirection: "row", alignItems: "center" },
   title: { color: colors.text, fontSize: 26, fontWeight: "800" },
   greeting: { color: colors.textMuted, fontSize: 14, marginTop: -8 },
   statsRow: { flexDirection: "row", gap: 10 },
