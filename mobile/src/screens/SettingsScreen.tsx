@@ -10,6 +10,7 @@ import { colors } from "../theme/colors";
 import { useAuth } from "../auth/AuthContext";
 import NicknameModal from "../components/NicknameModal";
 import ChangePasswordModal from "../components/ChangePasswordModal";
+import DeleteAccountModal from "../components/DeleteAccountModal";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = require("../../package.json");
 
@@ -24,6 +25,7 @@ export default function SettingsScreen({}: Props) {
   const { user, setUser, refresh } = useAuth();
   const [nicknameModalVisible, setNicknameModalVisible] = useState(false);
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
+  const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [permissions, setPermissions] = useState<PermissionRow[]>([]);
   const [exporting, setExporting] = useState(false);
 
@@ -107,7 +109,7 @@ export default function SettingsScreen({}: Props) {
   };
 
   const handleLogout = () => {
-    Alert.alert("로그아웃", "로그아웃 할까요?", [
+    Alert.alert("로그아웃", "정말 로그아웃 할까요?", [
       { text: "취소", style: "cancel" },
       {
         text: "로그아웃",
@@ -119,23 +121,11 @@ export default function SettingsScreen({}: Props) {
     ]);
   };
 
-  const handleDeleteAccount = () => {
+  const handleConfirmDelete = async (password: string) => {
     if (!user) return;
-    Alert.alert(
-      "계정 삭제",
-      "계정을 삭제할까요? 저장된 라이딩 기록은 계정과 별개로 이 폰에 그대로 남아요.",
-      [
-        { text: "취소", style: "cancel" },
-        {
-          text: "삭제",
-          style: "destructive",
-          onPress: async () => {
-            await deleteAccount(user.id);
-            await refresh();
-          },
-        },
-      ]
-    );
+    await deleteAccount(user.id, password);
+    setDeleteModalVisible(false);
+    await refresh();
   };
 
   return (
@@ -143,6 +133,8 @@ export default function SettingsScreen({}: Props) {
       <Section title="계정">
         <Row label="닉네임" value={user?.nickname ?? "-"} onPress={() => setNicknameModalVisible(true)} />
         <Row label="비밀번호" value="변경" onPress={() => setPasswordModalVisible(true)} />
+        <Row label="로그아웃" onPress={handleLogout} />
+        <Row label="계정 삭제" labelColor={colors.danger} onPress={() => setDeleteModalVisible(true)} />
       </Section>
 
       <Section title="권한 상태">
@@ -176,15 +168,6 @@ export default function SettingsScreen({}: Props) {
         <Row label="버전" value={pkg.version} />
       </Section>
 
-      <View style={styles.bottomActions}>
-        <Pressable style={styles.outlineButton} onPress={handleLogout}>
-          <Text style={styles.outlineButtonText}>로그아웃</Text>
-        </Pressable>
-        <Pressable style={styles.dangerButton} onPress={handleDeleteAccount}>
-          <Text style={styles.dangerButtonText}>계정 삭제</Text>
-        </Pressable>
-      </View>
-
       <NicknameModal
         visible={nicknameModalVisible}
         initialValue={user?.nickname ?? ""}
@@ -195,6 +178,11 @@ export default function SettingsScreen({}: Props) {
         visible={passwordModalVisible}
         onSave={handleChangePassword}
         onClose={() => setPasswordModalVisible(false)}
+      />
+      <DeleteAccountModal
+        visible={deleteModalVisible}
+        onConfirm={handleConfirmDelete}
+        onClose={() => setDeleteModalVisible(false)}
       />
     </ScrollView>
   );
@@ -209,12 +197,22 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Row({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
+function Row({
+  label,
+  value,
+  labelColor,
+  onPress,
+}: {
+  label: string;
+  value?: string;
+  labelColor?: string;
+  onPress?: () => void;
+}) {
   const Wrapper = onPress ? Pressable : View;
   return (
     <Wrapper style={styles.row} onPress={onPress}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={styles.rowValue}>{value}</Text>
+      <Text style={[styles.rowLabel, labelColor ? { color: labelColor } : null]}>{label}</Text>
+      {value !== undefined && <Text style={styles.rowValue}>{value}</Text>}
     </Wrapper>
   );
 }
@@ -247,5 +245,4 @@ const styles = StyleSheet.create({
   outlineButtonText: { color: colors.accent, fontSize: 14, fontWeight: "700" },
   dangerButton: { margin: 8, marginTop: 0, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   dangerButtonText: { color: colors.danger, fontSize: 14, fontWeight: "700" },
-  bottomActions: { gap: 10 },
 });

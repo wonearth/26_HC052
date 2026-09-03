@@ -168,8 +168,15 @@ export async function changePassword(
 }
 
 /** 계정만 삭제하고 로그아웃 — 라이딩 기록은 계정과 분리되어 있어서 그대로 남는다. */
-export async function deleteAccount(userId: number): Promise<void> {
+export async function deleteAccount(userId: number, password: string): Promise<void> {
   const db = await getDb();
+  const row = await db.getFirstAsync<{ password_hash: string; password_salt: string }>(
+    `SELECT password_hash, password_salt FROM users WHERE id = ?`,
+    [userId]
+  );
+  if (!row || !(await verifyPassword(password, row.password_salt, row.password_hash))) {
+    throw new Error("비밀번호가 올바르지 않아요.");
+  }
   await db.runAsync(`DELETE FROM users WHERE id = ?`, [userId]);
   await setCurrentUserId(null);
 }
