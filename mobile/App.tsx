@@ -8,9 +8,11 @@ import ScanScreen from "./src/screens/ScanScreen";
 import RideScreen from "./src/screens/RideScreen";
 import RideDetailScreen from "./src/screens/RideDetailScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
+import LoginScreen from "./src/screens/LoginScreen";
 import type { RootStackParamList } from "./src/navigation/types";
 import { initDb } from "./src/db/database";
 import { colors } from "./src/theme/colors";
+import { AuthProvider, useAuth } from "./src/auth/AuthContext";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -26,36 +28,56 @@ const navTheme: Theme = {
   },
 };
 
-export default function App() {
-  const [ready, setReady] = useState(false);
+function LoadingScreen() {
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background, alignItems: "center", justifyContent: "center" }}>
+      <ActivityIndicator color={colors.accent} size="large" />
+    </View>
+  );
+}
 
-  useEffect(() => {
-    initDb().then(() => setReady(true));
-  }, []);
+function RootNavigator() {
+  const { user, loading } = useAuth();
 
-  if (!ready) {
-    return (
-      <View style={{ flex: 1, backgroundColor: colors.background, alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color={colors.accent} size="large" />
-      </View>
-    );
-  }
+  if (loading) return <LoadingScreen />;
 
   return (
-    <NavigationContainer theme={navTheme}>
-      <StatusBar style="light" />
-      <Stack.Navigator
-        screenOptions={{
-          headerStyle: { backgroundColor: colors.surface },
-          headerTintColor: colors.text,
-        }}
-      >
-        <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
-        <Stack.Screen name="Scan" component={ScanScreen} options={{ title: "QR 스캔" }} />
-        <Stack.Screen name="Ride" component={RideScreen} options={{ title: "주행 중", headerBackVisible: false }} />
-        <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: "라이딩 상세" }} />
-        <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: "설정" }} />
-      </Stack.Navigator>
-    </NavigationContainer>
+    <Stack.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.text,
+      }}
+    >
+      {user ? (
+        <>
+          <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
+          <Stack.Screen name="Scan" component={ScanScreen} options={{ title: "QR 스캔" }} />
+          <Stack.Screen name="Ride" component={RideScreen} options={{ title: "주행 중", headerBackVisible: false }} />
+          <Stack.Screen name="RideDetail" component={RideDetailScreen} options={{ title: "라이딩 상세" }} />
+          <Stack.Screen name="Settings" component={SettingsScreen} options={{ title: "설정" }} />
+        </>
+      ) : (
+        <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
+      )}
+    </Stack.Navigator>
+  );
+}
+
+export default function App() {
+  const [dbReady, setDbReady] = useState(false);
+
+  useEffect(() => {
+    initDb().then(() => setDbReady(true));
+  }, []);
+
+  if (!dbReady) return <LoadingScreen />;
+
+  return (
+    <AuthProvider>
+      <NavigationContainer theme={navTheme}>
+        <StatusBar style="light" />
+        <RootNavigator />
+      </NavigationContainer>
+    </AuthProvider>
   );
 }
