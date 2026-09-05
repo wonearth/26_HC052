@@ -3,22 +3,18 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
 import threading
-from urllib.parse import urljoin
 import cv2
 import numpy as np
 import onnxruntime as ort
 import time
 from scipy.optimize import linear_sum_assignment
-from flask import Flask, Response, render_template, jsonify, request
 from collections import deque
 from picamera2 import Picamera2
 
 import ble_peripheral
 import imu_sensor
 
-# =========================
 # 설정값
-# =========================
 YOLO_SIZE = 320
 CONF_THRESHOLD = 0.20
 NMS_THRESHOLD = 0.45
@@ -50,13 +46,9 @@ CLASS_INFO = {
 }
 
 cv2.setNumThreads(1)
-app = Flask(__name__)
-WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://adaspm.vercel.app/")
 
 
-# =========================
 # IoU 계산
-# =========================
 def bbox_iou(box1, box2):
     x1 = max(box1[0], box2[0])
     y1 = max(box1[1], box2[1])
@@ -70,9 +62,7 @@ def bbox_iou(box1, box2):
     return inter_area / float(box1_area + box2_area - inter_area + 1e-5)
 
 
-# =========================
 # 객체 Tracking
-# =========================
 class STrack:
     def __init__(self, bbox, score, cls_id):
         self.bbox = np.array(bbox, dtype=np.float32)
@@ -166,9 +156,7 @@ class SimpleByteTracker:
         return matches, u_track, u_det
 
 
-# =========================
 # Collision Zone
-# =========================
 def get_collision_zone(frame_width, frame_height):
     # 킥보드 전방 예상 진행영역
     return np.array([
@@ -184,9 +172,7 @@ def is_in_collision_zone(x1, y1, x2, y2, collision_zone):
     return cv2.pointPolygonTest(collision_zone, object_point, False) >= 0
 
 
-# =========================
 # 거리 기록 / 접근속도 / TTC
-# =========================
 distance_history = {}
 time_history = {}
 
@@ -230,10 +216,7 @@ def calculate_ttc(distance, approach_speed):
     return distance / approach_speed  # TTC = 거리 / 상대 접근속도
 
 
-# =========================
-# 최종 위험도 판단
-# 거리 + TTC + Collision Zone
-# =========================
+# 최종 위험도 판단 (거리 + TTC + Collision Zone)
 def get_final_risk(distance, ttc, in_collision_zone):
     if not in_collision_zone:  # 진행경로 밖
         return "CAUTION" if distance <= 5.0 else "SAFE"
@@ -255,12 +238,10 @@ def get_final_risk(distance, ttc, in_collision_zone):
 
     return "SAFE"
 
-
 fps_list = deque(maxlen=30)
 
-# =========================
+
 # 실시간 위험도 상태 공유 (감지 스레드 -> /api/live_state)
-# =========================
 RISK_RANK = {"SAFE": 0, "CAUTION": 1, "WARNING": 2, "DANGER": 3}
 RISK_TITLES = {
     "SAFE": "현재 상태 · 안전",
@@ -279,13 +260,6 @@ _live_state = {
     "ttc_sec": None,
     "in_collision_zone": False,
 }
-
-_frame_lock = threading.Lock()
-_latest_jpeg = None
-
-_video_viewers_lock = threading.Lock()
-_video_viewers = 0  # /video_feed를 보고 있는 클라이언트 수 (0이면 인코딩 자체를 생략)
-
 
 def describe_target(class_name, distance, ttc, in_collision_zone):
     zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
@@ -347,9 +321,7 @@ def enhance_low_light(frame_bgr):
     return cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
 
 
-# =========================
 # 실시간 영상 처리 (백그라운드 스레드에서 계속 실행)
-# =========================
 def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
     global _latest_jpeg
 
@@ -472,9 +444,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 del distance_history[stale_id]
                 del time_history[stale_id]
 
-        # =========================
         # 위험도 판단
-        # =========================
         danger_detected = False
         if collision_zone is None or collision_zone_dims != (w_orig, h_orig):
             collision_zone = get_collision_zone(w_orig, h_orig)
@@ -593,80 +563,15 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
         )
 
-        # Flask 스트리밍용 JPEG 변환 — 보는 사람이 없으면 인코딩 자체를 건너뜀
-        with _video_viewers_lock:
-            has_viewers = _video_viewers > 0
 
-        if has_viewers:
-            success, buffer = cv2.imencode(
-                ".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
-            )
-
-            if not success:
-                continue
-
-            with _frame_lock:
-                _latest_jpeg = buffer.tobytes()
-
-
-# =========================
-# Flask
-# =========================
+# 카메라/모델/트래커 전역 핸들 (스레드 간 공유)
 picam2 = None
 yolo_session = None
 yolo_input_name = None
 tracker = None
 
 
-@app.route("/")
-def live():
-    ride_token = request.args.get("token", "")
-    ride_upload_url = urljoin(WEB_APP_URL, "/api/rides")
-    return render_template(
-        "live.html",
-        web_app_url=WEB_APP_URL,
-        ride_token=ride_token,
-        ride_upload_url=ride_upload_url,
-    )
-
-
-@app.route("/api/live_state")
-def live_state():
-    return jsonify(get_live_state())
-
-
-def stream_frames():
-    global _video_viewers
-    with _video_viewers_lock:
-        _video_viewers += 1
-    try:
-        while True:
-            with _frame_lock:
-                frame_bytes = _latest_jpeg
-            if frame_bytes is not None:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n"
-                    + frame_bytes
-                    + b"\r\n"
-                )
-            time.sleep(0.05)
-    finally:
-        with _video_viewers_lock:
-            _video_viewers -= 1
-
-
-@app.route("/video_feed")
-def video_feed():
-    return Response(
-        stream_frames(),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
-
-
-# =========================
-# Main
-# =========================
+# Main 코드
 def main():
     global picam2, yolo_session, yolo_input_name, tracker
 
@@ -737,23 +642,12 @@ def main():
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
 
-    print("🚀 Flask 서버 시작! 브라우저에서 http://라즈베리파이IP:5000 접속")
-
-    cert_path, key_path = "cert.pem", "key.pem"
-    ssl_context = (
-        (cert_path, key_path)
-        if os.path.exists(cert_path) and os.path.exists(key_path)
-        else None
-    )
-    if ssl_context is None:
-        print(
-            "⚠️  cert.pem/key.pem이 없어서 HTTP로 실행합니다. "
-            "GPS는 브라우저 보안 정책상 HTTPS에서만 동작하니, "
-            "실제 라이딩에 쓰기 전에 자체서명 인증서를 만들어주세요."
-        )
+    print("🚀 준비 완료! 감지/BLE/IMU 스레드가 백그라운드에서 계속 돕니다. (Ctrl+C로 종료)")
 
     try:
-        app.run(host="0.0.0.0", port=5000, threaded=True, ssl_context=ssl_context)
+        threading.Event().wait()  # 모든 실제 작업은 위 데몬 스레드들이 담당, 메인 스레드는 그냥 대기
+    except KeyboardInterrupt:
+        print("종료 신호 수신, 정리 중...")
     finally:
         if picam2 is not None:
             picam2.stop()
