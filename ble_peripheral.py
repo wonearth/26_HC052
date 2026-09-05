@@ -73,14 +73,18 @@ class RideSession:
         with self._lock:
             return self._active
 
-    def record_event(self, risk_key, object_class, distance_m, ttc_sec):
-        """risk_key는 safe/caution/warning/danger. 위치는 안 담음 — 앱이 시각 기준으로 붙임."""
+    def record_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
+        """risk_key는 safe/caution/warning/danger. 위치는 안 담음 — 앱이 시각 기준으로 붙임.
+
+        쿨다운은 track_id 기준(같은 객체가 매 프레임 중복 기록되는 것만 막음) —
+        예전엔 object_class 기준이라 서로 다른 대상이 같은 클래스면 한쪽이 묻혔음.
+        """
         with self._lock:
             if not self._active:
                 return
             risk_level = RISK_TO_KOREAN.get(risk_key, "위험")
             now = time.monotonic()
-            key = object_class or "unknown"
+            key = track_id if track_id is not None else (object_class or "unknown")
             last = self._last_event_at.get(key, 0)
             if now - last < EVENT_COOLDOWN_SEC:
                 return
@@ -88,7 +92,7 @@ class RideSession:
             self._events.append({
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
                 "risk_level": risk_level,
-                "object_class": key,
+                "object_class": object_class or "unknown",
                 "distance_m": distance_m if distance_m is not None else 0.0,
                 "ttc_sec": ttc_sec if ttc_sec is not None else 0.0,
             })
@@ -134,6 +138,10 @@ class BlePeripheralServer:
         self._live_thread = None
         self._stop_live = threading.Event()
 
+    def record_ride_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
+        """감지 루프에서 프레임마다 바로 호출 — 2초 폴링을 기다리지 않아 짧게 지나가는 위험도 놓치지 않음."""
+        self._session.record_event(risk_key, track_id, object_class, distance_m, ttc_sec)
+
     def _on_control_write(self, value, options=None):
         command = value[0] if value else None
         if command == CONTROL_START:
@@ -160,18 +168,11 @@ class BlePeripheralServer:
             self._live_thread.join(timeout=2)
 
     def _live_loop(self):
-        """주행 중 카메라 위험도를 주기적으로 확인 — 이벤트 기록 + 실시간 상태 알림."""
+        """주행 중 BLE 상태 알림(현재 위험도 + IMU)을 주기적으로 보낸다.
+        이벤트 기록 자체는 record_ride_event()로 app.py가 프레임마다 직접 처리한다."""
         while not self._stop_live.is_set() and self._session.is_active():
             state = self._live_state_getter() or {}
             risk_key = state.get("risk", "safe")
-
-            if risk_key in ("warning", "danger"):
-                self._session.record_event(
-                    risk_key,
-                    state.get("class_name"),
-                    state.get("distance_m"),
-                    state.get("ttc_sec"),
-                )
 
             self._update_live_status_characteristic(risk_key)
             self._update_imu_status_characteristic()

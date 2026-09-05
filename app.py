@@ -261,6 +261,9 @@ _live_state = {
     "in_collision_zone": False,
 }
 
+_event_recorder = None  # main()에서 BLE 세션 생성 후 연결됨 — record_ride_event(risk_key, track_id, class_name, distance, ttc)
+
+
 def describe_target(class_name, distance, ttc, in_collision_zone):
     zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
     if ttc is not None:
@@ -497,6 +500,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                     frame_worst_rank = rank
                     frame_worst_target = {
                         "risk": final_risk,
+                        "track_id": track_id,
                         "class_name": class_name,
                         "distance": distance,
                         "ttc": ttc,
@@ -531,6 +535,17 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             )
 
         update_live_state(frame_worst_target)
+
+        if frame_worst_target is not None and _event_recorder is not None:
+            worst_risk_key = frame_worst_target["risk"].lower()
+            if worst_risk_key in ("warning", "danger"):
+                _event_recorder(
+                    worst_risk_key,
+                    frame_worst_target["track_id"],
+                    frame_worst_target["class_name"],
+                    frame_worst_target["distance"],
+                    frame_worst_target["ttc"],
+                )
 
         # DANGER 객체가 하나라도 있으면 상단 충돌 경고
         if danger_detected:
@@ -573,7 +588,7 @@ tracker = None
 
 # Main 코드
 def main():
-    global picam2, yolo_session, yolo_input_name, tracker
+    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder
 
     print("1. 프로그램 시작됨...")
     yolo_onnx = "./yolov8n.onnx"
@@ -638,6 +653,7 @@ def main():
         )
         ble_thread = threading.Thread(target=ble_server.start, daemon=True)
         ble_thread.start()
+        _event_recorder = ble_server.record_ride_event
         print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결, GPS는 폰에서 받음)")
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
