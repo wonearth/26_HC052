@@ -30,14 +30,6 @@ MIN_APPROACH_SPEED = 0.3   # TTC 계산 최소 접근속도
 REACTION_TIME_SEC = 0.7    # 라이더 반응 시간(실측 필요) — 이 시간 동안은 등속으로 더 나아간다고 가정
 DECELERATION_MPS2 = 3.5    # 킥보드 제동 감속도(m/s^2, 실측 필요)
 
-RISK_COLORS = {
-    "SAFE": (0, 255, 0),
-    "CAUTION": (0, 255, 255),
-    "WARNING": (0, 165, 255),
-    "DANGER": (0, 0, 255),
-    "UNKNOWN": (200, 200, 200)
-}
-
 # COCO 클래스: (이름, 평균 실제 높이 m)
 CLASS_INFO = {
     0: ("Person", 1.7),
@@ -371,7 +363,6 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         frame_count += 1
         h_orig, w_orig = frame.shape[:2]
         raw_frame = enhance_low_light(frame)  # 어두우면 명암 대비 보정 (밝으면 frame을 그대로 반환, 복사 없음)
-        display_frame = raw_frame.copy()  # 박스/라벨을 그릴 표시용 프레임만 복사
 
         # =========================
         # YOLO 객체 탐지
@@ -468,7 +459,6 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 del time_history[stale_id]
 
         # 위험도 판단
-        danger_detected = False
         current_speed_kmh = _speed_getter() if _speed_getter is not None else 0.0
         if (
             collision_zone is None
@@ -481,9 +471,6 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             collision_zone_dims = (w_orig, h_orig, current_speed_kmh)
 
         stopping_distance = calculate_stopping_distance(current_speed_kmh)
-
-        # 개발용 Collision Zone 표시
-        cv2.polylines(display_frame, [collision_zone], True, (255, 255, 255), 1, cv2.LINE_AA)
 
         frame_worst_rank = -1
         frame_worst_target = None
@@ -517,12 +504,6 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 )  # ⑤ 실제 진행경로 안인지 판단
 
                 final_risk = get_final_risk(distance, ttc, in_collision_zone, stopping_distance)  # ⑥ 최종 위험도
-                risk_color = RISK_COLORS[final_risk]
-
-                label = f"{class_name} {distance:.1f}m"  # 화면에는 핵심 정보만 표시
-
-                if final_risk == "DANGER":
-                    danger_detected = True
 
                 rank = RISK_RANK[final_risk]
                 if rank > frame_worst_rank:
@@ -536,36 +517,8 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                         "in_collision_zone": in_collision_zone,
                     }
 
-            else:
-                risk_color = RISK_COLORS["UNKNOWN"]
-                label = class_name
-
-            # 위험도에 따라 Bounding Box 색상 변경
-            cv2.rectangle(display_frame, (x1, y1), (x2, y2), risk_color, 2)
-
-            # 객체명 + 거리 라벨
-            (text_w, text_h), _ = cv2.getTextSize(
-                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-            )
-
-            label_y = max(y1 - text_h - 10, 0)
-
-            cv2.rectangle(
-                display_frame,
-                (x1, label_y),
-                (min(x1 + text_w + 10, w_orig - 1), min(label_y + text_h + 8, h_orig - 1)),
-                risk_color,
-                -1
-            )
-
-            cv2.putText(
-                display_frame, label, (x1 + 5, label_y + text_h + 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA
-            )
-
         imu_state = imu_sensor.get_imu_state()
         if imu_state.get("impact") or imu_state.get("rollover"):
-            danger_detected = True
             frame_worst_target = {
                 "risk": "DANGER",
                 "track_id": None,
@@ -588,36 +541,10 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                     frame_worst_target["ttc"],
                 )
 
-        # DANGER 객체가 하나라도 있으면 상단 충돌 경고
-        if danger_detected:
-            warning_text = "COLLISION RISK"
-            (tw, _), _ = cv2.getTextSize(
-                warning_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2
-            )
-
-            center_x = w_orig // 2
-
-            cv2.rectangle(
-                display_frame,
-                (center_x - tw // 2 - 15, 15),
-                (center_x + tw // 2 + 15, 55),
-                (0, 0, 255),
-                -1
-            )
-
-            cv2.putText(
-                display_frame, warning_text, (center_x - tw // 2, 45),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA
-            )
-
-        # FPS 계산
+        # FPS 계산 (콘솔 디버그용으로만 남김 — 화면에 그릴 곳이 없어짐)
         elapsed_time = max(time.time() - start_time, 0.001)
         fps_list.append(1.0 / elapsed_time)
         fps = sum(fps_list) / len(fps_list)
-        cv2.putText(
-            display_frame, f"FPS: {fps:.1f}", (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
-        )
 
 
 # 카메라/모델/트래커 전역 핸들 (스레드 간 공유)
