@@ -6,6 +6,7 @@ import {
   CHARACTERISTIC_IMU,
   CHARACTERISTIC_LIVE_STATUS,
   CHARACTERISTIC_RIDE_DATA,
+  CHARACTERISTIC_SPEED,
   SERVICE_UUID,
 } from "./protocol";
 import type { PiRideSummary } from "../types/ride";
@@ -95,6 +96,24 @@ export class BleService {
 
   async sendStart(): Promise<void> {
     await this.writeControl(0x01);
+  }
+
+  /** 현재 주행 속도를 파이로 보낸다 (collision zone 크기 조정용). 실패해도 라이딩엔
+   * 영향 없어야 하므로 조용히 무시 — 파이는 갱신이 끊기면 알아서 기본값으로 폴백함. */
+  async writeSpeed(speedKmh: number): Promise<void> {
+    if (!this.device) return;
+    const raw = Math.max(0, Math.min(65535, Math.round(speedKmh * 10)));
+    const bytes = new Uint8Array([raw & 0xff, (raw >> 8) & 0xff]);
+    try {
+      await this.manager.writeCharacteristicWithResponseForDevice(
+        this.device.id,
+        SERVICE_UUID,
+        CHARACTERISTIC_SPEED,
+        base64Encode(bytes)
+      );
+    } catch {
+      // 속도 전송 실패는 무시 — 다음 GPS 샘플에서 다시 시도됨
+    }
   }
 
   private async writeControl(command: number): Promise<void> {

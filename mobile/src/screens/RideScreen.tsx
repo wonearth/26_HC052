@@ -87,7 +87,10 @@ export default function RideScreen({ route, navigation }: Props) {
       // GPS는 블루투스 상태와 무관하게 폰이 스스로 계속 기록한다 (연결 끊겨도 안전).
       await trackerRef.current.start({
         getCurrentRisk: () => currentRiskRef.current,
-        onSpeedUpdate: setCurrentSpeedKmh,
+        onSpeedUpdate: (speedKmh) => {
+          setCurrentSpeedKmh(speedKmh);
+          bleService.writeSpeed(speedKmh); // 파이의 collision zone 크기 조정용
+        },
         onDistanceUpdate: setCurrentDistanceKm,
       });
 
