@@ -27,6 +27,9 @@ MAX_LOST_FRAMES = 5        # 객체를 잠깐 놓쳐도 ID 유지
 MOTION_THRESHOLD = 0.3     # 작은 거리 변화는 노이즈로 무시
 MIN_APPROACH_SPEED = 0.3   # TTC 계산 최소 접근속도
 
+REACTION_TIME_SEC = 0.7    # 라이더 반응 시간(실측 필요) — 이 시간 동안은 등속으로 더 나아간다고 가정
+DECELERATION_MPS2 = 3.5    # 킥보드 제동 감속도(m/s^2, 실측 필요)
+
 RISK_COLORS = {
     "SAFE": (0, 255, 0),
     "CAUTION": (0, 255, 255),
@@ -218,21 +221,33 @@ def calculate_ttc(distance, approach_speed):
     return distance / approach_speed  # TTC = 거리 / 상대 접근속도
 
 
-# 최종 위험도 판단 (거리 + TTC + Collision Zone)
-def get_final_risk(distance, ttc, in_collision_zone):
+def calculate_stopping_distance(speed_kmh):
+    """반응거리 + 제동거리. 현재 내 속도로는 몇 m 안에 멈출 수 있는지 — 이 거리보다
+    가까우면 상대가 안 다가오고 있어도(TTC=None이어도) 이미 위험하다고 봐야 함."""
+    speed_mps = max(0.0, speed_kmh) / 3.6
+    reaction_distance = speed_mps * REACTION_TIME_SEC
+    braking_distance = (speed_mps ** 2) / (2 * DECELERATION_MPS2)
+    return reaction_distance + braking_distance
+
+
+# 최종 위험도 판단 (거리 + TTC + Collision Zone + 정지 가능 거리)
+def get_final_risk(distance, ttc, in_collision_zone, stopping_distance=0.0):
+    danger_dist = max(5.0, stopping_distance)          # 정지 가능 거리가 더 멀면 그쪽을 기준으로
+    caution_dist = max(10.0, stopping_distance * 2)     # DANGER 기준의 2배를 CAUTION 경계로
+
     if not in_collision_zone:  # 진행경로 밖
-        return "CAUTION" if distance <= 5.0 else "SAFE"
+        return "CAUTION" if distance <= danger_dist else "SAFE"
 
     if ttc is not None and ttc <= 1.5:  # TTC 1.5초 이하
         return "DANGER"
 
-    if distance <= 5.0:  # 진행경로 안 + 5m 이하
+    if distance <= danger_dist:  # 진행경로 안 + 정지 가능 거리 이내
         return "DANGER"
 
     if ttc is not None and ttc <= 3.0:  # TTC 3초 이하
         return "WARNING"
 
-    if distance <= 10.0:  # 진행경로 안 + 10m 이하
+    if distance <= caution_dist:  # 진행경로 안 + 정지 가능 거리의 2배 이내
         return "CAUTION"
 
     if ttc is not None and ttc <= 5.0:  # TTC 5초 이하
@@ -268,6 +283,8 @@ _speed_getter = None  # main()에서 연결됨 — get_current_speed_kmh() (폰�
 
 
 def describe_target(class_name, distance, ttc, in_collision_zone):
+    if class_name in ("IMU_충돌", "IMU_전복"):
+        return f"IMU 센서 감지 · {class_name.split('_', 1)[1]}"
     zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
     if ttc is not None:
         return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
@@ -463,6 +480,8 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             collision_zone = get_collision_zone(w_orig, h_orig, current_speed_kmh)
             collision_zone_dims = (w_orig, h_orig, current_speed_kmh)
 
+        stopping_distance = calculate_stopping_distance(current_speed_kmh)
+
         # 개발용 Collision Zone 표시
         cv2.polylines(display_frame, [collision_zone], True, (255, 255, 255), 1, cv2.LINE_AA)
 
@@ -497,7 +516,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                     x1, y1, x2, y2, collision_zone
                 )  # ⑤ 실제 진행경로 안인지 판단
 
-                final_risk = get_final_risk(distance, ttc, in_collision_zone)  # ⑥ 최종 위험도
+                final_risk = get_final_risk(distance, ttc, in_collision_zone, stopping_distance)  # ⑥ 최종 위험도
                 risk_color = RISK_COLORS[final_risk]
 
                 label = f"{class_name} {distance:.1f}m"  # 화면에는 핵심 정보만 표시
@@ -543,6 +562,18 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 display_frame, label, (x1 + 5, label_y + text_h + 2),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA
             )
+
+        imu_state = imu_sensor.get_imu_state()
+        if imu_state.get("impact") or imu_state.get("rollover"):
+            danger_detected = True
+            frame_worst_target = {
+                "risk": "DANGER",
+                "track_id": None,
+                "class_name": "IMU_충돌" if imu_state.get("impact") else "IMU_전복",
+                "distance": 0.0,
+                "ttc": None,
+                "in_collision_zone": True,
+            }
 
         update_live_state(frame_worst_target)
 
