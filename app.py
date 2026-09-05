@@ -256,7 +256,7 @@ def get_final_risk(distance, ttc, in_collision_zone):
     return "SAFE"
 
 
-fps_list = []
+fps_list = deque(maxlen=30)
 
 # =========================
 # 실시간 위험도 상태 공유 (감지 스레드 -> /api/live_state)
@@ -282,6 +282,9 @@ _live_state = {
 
 _frame_lock = threading.Lock()
 _latest_jpeg = None
+
+_video_viewers_lock = threading.Lock()
+_video_viewers = 0  # /video_feed를 보고 있는 클라이언트 수 (0이면 인코딩 자체를 생략)
 
 
 def describe_target(class_name, distance, ttc, in_collision_zone):
@@ -353,6 +356,8 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
     frame_count = 0
     camera_failure_count = 0
     last_online_targets = []
+    collision_zone = None
+    collision_zone_dims = None
 
     while True:
         start_time = time.time()
@@ -370,8 +375,8 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         frame_count += 1
         h_orig, w_orig = frame.shape[:2]
-        raw_frame = enhance_low_light(frame.copy())  # 어두우면 명암 대비 보정
-        display_frame = raw_frame.copy()  # 기존 도로 탐지 제거
+        raw_frame = enhance_low_light(frame)  # 어두우면 명암 대비 보정 (밝으면 frame을 그대로 반환, 복사 없음)
+        display_frame = raw_frame.copy()  # 박스/라벨을 그릴 표시용 프레임만 복사
 
         # =========================
         # YOLO 객체 탐지
@@ -461,11 +466,19 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
 
             last_online_targets = tracker.update(tracker_inputs)  # 객체 ID 추적
 
+            # 추적이 끝난 track_id의 거리 기록은 정리 (안 그러면 라이딩 내내 계속 쌓임)
+            alive_ids = {t.track_id for t in tracker.tracked_stracks}
+            for stale_id in list(distance_history.keys() - alive_ids):
+                del distance_history[stale_id]
+                del time_history[stale_id]
+
         # =========================
         # 위험도 판단
         # =========================
         danger_detected = False
-        collision_zone = get_collision_zone(w_orig, h_orig)
+        if collision_zone is None or collision_zone_dims != (w_orig, h_orig):
+            collision_zone = get_collision_zone(w_orig, h_orig)
+            collision_zone_dims = (w_orig, h_orig)
 
         # 개발용 Collision Zone 표시
         cv2.polylines(display_frame, [collision_zone], True, (255, 255, 255), 1, cv2.LINE_AA)
@@ -574,28 +587,26 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         # FPS 계산
         elapsed_time = max(time.time() - start_time, 0.001)
         fps_list.append(1.0 / elapsed_time)
-
-        if len(fps_list) > 30:
-            fps_list.pop(0)
-
         fps = sum(fps_list) / len(fps_list)
         cv2.putText(
             display_frame, f"FPS: {fps:.1f}", (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
         )
 
-        # Flask 스트리밍용 JPEG 변환
-        success, buffer = cv2.imencode(
-            ".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
-        )
+        # Flask 스트리밍용 JPEG 변환 — 보는 사람이 없으면 인코딩 자체를 건너뜀
+        with _video_viewers_lock:
+            has_viewers = _video_viewers > 0
 
-        if not success:
-            continue
+        if has_viewers:
+            success, buffer = cv2.imencode(
+                ".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
+            )
 
-        frame_bytes = buffer.tobytes()
+            if not success:
+                continue
 
-        with _frame_lock:
-            _latest_jpeg = frame_bytes
+            with _frame_lock:
+                _latest_jpeg = buffer.tobytes()
 
 
 # =========================
@@ -625,17 +636,24 @@ def live_state():
 
 
 def stream_frames():
-    while True:
-        with _frame_lock:
-            frame_bytes = _latest_jpeg
-        if frame_bytes is not None:
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n"
-                + frame_bytes
-                + b"\r\n"
-            )
-        time.sleep(0.05)
+    global _video_viewers
+    with _video_viewers_lock:
+        _video_viewers += 1
+    try:
+        while True:
+            with _frame_lock:
+                frame_bytes = _latest_jpeg
+            if frame_bytes is not None:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + frame_bytes
+                    + b"\r\n"
+                )
+            time.sleep(0.05)
+    finally:
+        with _video_viewers_lock:
+            _video_viewers -= 1
 
 
 @app.route("/video_feed")
