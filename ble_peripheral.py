@@ -35,6 +35,7 @@ CHAR_CONTROL_UUID = "8ea73ee0-6fbd-4a5b-a121-e249ba53033a"
 CHAR_LIVE_STATUS_UUID = "0c3d0e6b-3de8-4ac5-9a23-30bd69cdfa2e"
 CHAR_RIDE_DATA_UUID = "10a90785-c204-4b26-aeac-56f0336b9f14"
 CHAR_IMU_STATUS_UUID = "6f8d7b21-3e2a-4f9c-a6d1-5b7c8e9f1023"
+CHAR_SPEED_UUID = "518a733d-11f7-443c-9ed7-1ed53b260f84"
 
 CONTROL_START = 0x01
 CONTROL_STOP = 0x02
@@ -137,6 +138,23 @@ class BlePeripheralServer:
         self._periph = None
         self._live_thread = None
         self._stop_live = threading.Event()
+        self._current_speed_kmh = 0.0
+        self._speed_updated_at = 0.0
+
+    def _on_speed_write(self, value, options=None):
+        """폰이 보내는 현재 주행 속도 — collision zone 크기를 속도에 맞게 조정하는 데 씀.
+        페이로드: km/h*10을 2바이트 little-endian 정수로 (예: 23.4km/h -> 234 -> [0xEA, 0x00])."""
+        if len(value) < 2:
+            return
+        raw = value[0] | (value[1] << 8)
+        self._current_speed_kmh = raw / 10.0
+        self._speed_updated_at = time.monotonic()
+
+    def get_current_speed_kmh(self):
+        """5초 넘게 갱신이 없으면(연결 끊김 등) 0으로 폴백 — 속도를 부풀린 채로 굳는 것 방지."""
+        if time.monotonic() - self._speed_updated_at > 5.0:
+            return 0.0
+        return self._current_speed_kmh
 
     def record_ride_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """감지 루프에서 프레임마다 바로 호출 — 2초 폴링을 기다리지 않아 짧게 지나가는 위험도 놓치지 않음."""
@@ -252,6 +270,12 @@ class BlePeripheralServer:
             srv_id=1, chr_id=4, uuid=CHAR_IMU_STATUS_UUID,
             value=[], notifying=False,
             flags=["notify"],
+        )
+        self._periph.add_characteristic(
+            srv_id=1, chr_id=5, uuid=CHAR_SPEED_UUID,
+            value=[], notifying=False,
+            flags=["write"],
+            write_callback=self._on_speed_write,
         )
 
         print(f"📡 BLE 주변장치 시작: {self._local_name} ({adapter_address})")

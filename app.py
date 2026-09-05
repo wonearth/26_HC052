@@ -157,11 +157,13 @@ class SimpleByteTracker:
 
 
 # Collision Zone
-def get_collision_zone(frame_width, frame_height):
-    # 킥보드 전방 예상 진행영역
+def get_collision_zone(frame_width, frame_height, speed_kmh=0.0):
+    # 킥보드 전방 예상 진행영역 — 속도가 빠를수록 더 멀리(화면 위쪽)까지 넓게 잡음
+    # (제동/반응 거리가 속도에 비례해 늘어나므로 저속일 때보다 미리 봐야 함. 계수는 실측 튜닝 필요)
+    top_y_ratio = max(0.35, 0.55 - speed_kmh * 0.005)
     return np.array([
-        [int(frame_width * 0.38), int(frame_height * 0.55)],
-        [int(frame_width * 0.62), int(frame_height * 0.55)],
+        [int(frame_width * 0.38), int(frame_height * top_y_ratio)],
+        [int(frame_width * 0.62), int(frame_height * top_y_ratio)],
         [int(frame_width * 0.88), frame_height - 1],
         [int(frame_width * 0.12), frame_height - 1]
     ], dtype=np.int32)
@@ -262,6 +264,7 @@ _live_state = {
 }
 
 _event_recorder = None  # main()에서 BLE 세션 생성 후 연결됨 — record_ride_event(risk_key, track_id, class_name, distance, ttc)
+_speed_getter = None  # main()에서 연결됨 — get_current_speed_kmh() (폰이 보낸 최신 주행속도)
 
 
 def describe_target(class_name, distance, ttc, in_collision_zone):
@@ -449,9 +452,16 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
 
         # 위험도 판단
         danger_detected = False
-        if collision_zone is None or collision_zone_dims != (w_orig, h_orig):
-            collision_zone = get_collision_zone(w_orig, h_orig)
-            collision_zone_dims = (w_orig, h_orig)
+        current_speed_kmh = _speed_getter() if _speed_getter is not None else 0.0
+        if (
+            collision_zone is None
+            or collision_zone_dims is None
+            or collision_zone_dims[0] != w_orig
+            or collision_zone_dims[1] != h_orig
+            or abs(collision_zone_dims[2] - current_speed_kmh) >= 1.0  # 1km/h 이상 바뀔 때만 재계산
+        ):
+            collision_zone = get_collision_zone(w_orig, h_orig, current_speed_kmh)
+            collision_zone_dims = (w_orig, h_orig, current_speed_kmh)
 
         # 개발용 Collision Zone 표시
         cv2.polylines(display_frame, [collision_zone], True, (255, 255, 255), 1, cv2.LINE_AA)
@@ -588,7 +598,7 @@ tracker = None
 
 # Main 코드
 def main():
-    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder
+    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter
 
     print("1. 프로그램 시작됨...")
     yolo_onnx = "./yolov8n.onnx"
@@ -654,6 +664,7 @@ def main():
         ble_thread = threading.Thread(target=ble_server.start, daemon=True)
         ble_thread.start()
         _event_recorder = ble_server.record_ride_event
+        _speed_getter = ble_server.get_current_speed_kmh
         print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결, GPS는 폰에서 받음)")
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
