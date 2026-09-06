@@ -45,8 +45,10 @@ LIVE_STATUS_INTERVAL_SEC = 2.0  # 실시간 위험도 notify 주기
 EVENT_COOLDOWN_SEC = 3.0       # 같은 대상이 연속으로 이벤트를 계속 만들지 않도록 최소 간격
 
 RISK_TO_KOREAN = {"safe": "안전", "caution": "주의", "warning": "경고", "danger": "위험"}
-# web/app.py의 _compute_safety_score()와 동일한 감점 기준 (일관성 유지)
-SAFETY_PENALTY = {"위험": 15, "경고": 8, "주의": 3, "안전": 0}
+# 위험도별 초당 감점 (실측 필요) — 이벤트 "개수"가 아니라 "노출 시간"으로 감점해서
+# 라이딩 시간에 자연히 정규화되게 함 (좁은 공간에서 같은 대상이 track_id를 바꿔가며
+# 반복 감지돼도 시간 누적은 중복되지 않음)
+RISK_PENALTY_PER_SEC = {"위험": 2.0, "경고": 0.6, "주의": 0.15, "안전": 0.0}
 
 
 class RideSession:
@@ -62,6 +64,8 @@ class RideSession:
         self._started_at = None
         self._events = []
         self._last_event_at = {}
+        self._risk_seconds = {level: 0.0 for level in RISK_PENALTY_PER_SEC}
+        self._last_sample_at = None
 
     def start(self):
         with self._lock:
@@ -79,6 +83,21 @@ class RideSession:
             if not self._active or self._started_at is None:
                 return 0
             return max(0, int((datetime.now(timezone.utc) - self._started_at).total_seconds()))
+
+    def record_risk_sample(self, risk_key):
+        """감지 루프가 매 프레임 호출 — 직전 샘플 이후 경과 시간을 해당 위험도에 누적한다.
+        track_id와 무관하게 "그 순간 위험도가 뭐였는지"만 보므로, 같은 대상이 ID를
+        바꿔가며 반복 감지돼도 감점이 중복되지 않고, 총합은 라이딩 시간을 못 넘는다."""
+        with self._lock:
+            if not self._active:
+                return
+            risk_level = RISK_TO_KOREAN.get(risk_key, "안전")
+            now = time.monotonic()
+            if self._last_sample_at is not None:
+                dt = min(now - self._last_sample_at, 1.0)  # 스레드 지연 등으로 튀는 값 방지
+                if dt > 0:
+                    self._risk_seconds[risk_level] = self._risk_seconds.get(risk_level, 0.0) + dt
+            self._last_sample_at = now
 
     def record_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """risk_key는 safe/caution/warning/danger. 위치는 안 담음 — 앱이 시각 기준으로 붙임.
@@ -112,8 +131,11 @@ class RideSession:
             self._active = False
             ended_at = datetime.now(timezone.utc)
             duration_sec = max(0, int((ended_at - self._started_at).total_seconds()))
-            penalty = sum(SAFETY_PENALTY.get(e["risk_level"], 0) for e in self._events)
-            safety_score = max(0, 100 - penalty)
+            penalty = sum(
+                self._risk_seconds.get(level, 0.0) * rate
+                for level, rate in RISK_PENALTY_PER_SEC.items()
+            )
+            safety_score = max(0, round(100 - penalty))
 
             return {
                 "client_ride_uuid": self._client_ride_uuid,
@@ -165,6 +187,10 @@ class BlePeripheralServer:
     def record_ride_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """감지 루프에서 프레임마다 바로 호출 — 2초 폴링을 기다리지 않아 짧게 지나가는 위험도 놓치지 않음."""
         self._session.record_event(risk_key, track_id, object_class, distance_m, ttc_sec)
+
+    def record_risk_sample(self, risk_key):
+        """감지 루프에서 매 프레임 호출 — 안전점수 계산용 위험 노출 시간을 누적."""
+        self._session.record_risk_sample(risk_key)
 
     def get_ride_status(self):
         """모니터링 대시보드용 — 라이딩 진행 여부와 경과 시간."""

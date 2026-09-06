@@ -14,12 +14,13 @@ from flask import Flask, Response, jsonify
 
 import ble_peripheral
 import imu_sensor
+import ultrasonic_sensor
 
 try:
-    from gpiozero import Buzzer
-    _BUZZER_AVAILABLE = True
+    from gpiozero import Buzzer, LED
+    _GPIO_AVAILABLE = True
 except ImportError:
-    _BUZZER_AVAILABLE = False
+    _GPIO_AVAILABLE = False
 
 # 설정값
 YOLO_SIZE = 320
@@ -48,30 +49,76 @@ CLASS_INFO = {
 }
 
 BUZZER_GPIO_PIN = 17  # 실제 배선한 GPIO 핀 번호 (BCM 기준)
+LED_GPIO_PIN = 27      # 위험(DANGER) 단계에서만 켜지는 시각 경고등
 
 buzzer = None
-if _BUZZER_AVAILABLE:
+led = None
+if _GPIO_AVAILABLE:
     try:
         buzzer = Buzzer(BUZZER_GPIO_PIN)
         print(f"✅ 버저 초기화 완료 (GPIO {BUZZER_GPIO_PIN})")
     except Exception as e:
         print(f"⚠️  버저 초기화 실패 — 버저 없이 동작합니다: {e}")
+    try:
+        led = LED(LED_GPIO_PIN)
+        print(f"✅ LED 초기화 완료 (GPIO {LED_GPIO_PIN})")
+    except Exception as e:
+        print(f"⚠️  LED 초기화 실패 — LED 없이 동작합니다: {e}")
 else:
-    print("⚠️  gpiozero 라이브러리가 없어 버저 없이 동작합니다 (pip3 install gpiozero)")
+    print("⚠️  gpiozero 라이브러리가 없어 버저/LED 없이 동작합니다 (pip3 install gpiozero)")
 
-_buzzer_active = False
+# 위험도별 부저 패턴 (on_time, off_time) — 청감 테스트 후 조정 가능.
+# 주의/경고는 느린 "삐 ... 삐 ... 삐", 위험은 빠르게 끊어지는 "삐삐삐삐삐삐".
+BUZZER_PATTERNS = {
+    "SAFE": None,
+    "CAUTION": (0.15, 0.6),
+    "WARNING": (0.15, 0.6),
+    "DANGER": (0.08, 0.08),
+}
+IMPACT_ALARM_SEC = 1.0  # IMU 충격 감지 시 끊기지 않고 울리는 경고음 길이
+
+_buzzer_pattern = None       # 현재 재생 중인 패턴 (None=꺼짐) — 안 바뀌면 다시 트리거하지 않음
+_impact_alarm_until = 0.0    # 이 시각까지는 충격 경고음이 위험도 패턴보다 우선
+_led_active = False
 
 
-def set_buzzer(should_sound):
-    """상태가 바뀔 때만 GPIO를 건드림 — 매 프레임 호출해도 안전."""
-    global _buzzer_active
-    if buzzer is None or should_sound == _buzzer_active:
+def set_buzzer(risk_key):
+    """위험도에 맞는 부저 패턴을 재생. 상태가 안 바뀌면 다시 트리거하지 않음.
+    충격 경고음(sound_impact_alarm) 재생 중이면 잠깐 갱신을 미뤄서 덮어쓰지 않는다."""
+    global _buzzer_pattern
+    if buzzer is None or time.monotonic() < _impact_alarm_until:
         return
-    _buzzer_active = should_sound
-    if should_sound:
-        buzzer.beep(on_time=0.2, off_time=0.2, background=True)
-    else:
+    pattern = BUZZER_PATTERNS.get(risk_key)
+    if pattern == _buzzer_pattern:
+        return
+    _buzzer_pattern = pattern
+    if pattern is None:
         buzzer.off()
+    else:
+        on_time, off_time = pattern
+        buzzer.beep(on_time=on_time, off_time=off_time, background=True)
+
+
+def sound_impact_alarm():
+    """IMU가 설정한 충격(가속도 임계값 초과)을 감지했을 때 1초간 끊기지 않는 경고음."""
+    global _impact_alarm_until, _buzzer_pattern
+    if buzzer is None:
+        return
+    buzzer.beep(on_time=IMPACT_ALARM_SEC, off_time=0.1, n=1, background=True)
+    _impact_alarm_until = time.monotonic() + IMPACT_ALARM_SEC
+    _buzzer_pattern = None  # 알람이 끝나면 다음 프레임에 현재 위험도로 다시 세팅되게 리셋
+
+
+def set_led(should_light):
+    """상태가 바뀔 때만 GPIO를 건드림 — 매 프레임 호출해도 안전."""
+    global _led_active
+    if led is None or should_light == _led_active:
+        return
+    _led_active = should_light
+    if should_light:
+        led.on()
+    else:
+        led.off()
 
 cv2.setNumThreads(1)
 
@@ -306,6 +353,8 @@ _live_state = {
 _event_recorder = None  # main()에서 BLE 세션 생성 후 연결됨 — record_ride_event(risk_key, track_id, class_name, distance, ttc)
 _speed_getter = None  # main()에서 연결됨 — get_current_speed_kmh() (폰이 보낸 최신 주행속도)
 _ble_server = None  # main()에서 연결됨 — get_ride_status() (개발자 모니터링 웹페이지용)
+_risk_sampler = None  # main()에서 연결됨 — record_risk_sample(risk_key) (안전점수용 위험 노출 시간 누적)
+_last_imu_impact = False  # IMU 충격 경고음을 감지 "순간"에 한 번만 울리기 위한 이전 프레임 상태
 
 # 개발자 모니터링 웹페이지용 (BGR)
 RISK_COLORS = {
@@ -342,6 +391,8 @@ def _has_viewers():
 def describe_target(class_name, distance, ttc, in_collision_zone):
     if class_name in ("IMU_충돌", "IMU_전복"):
         return f"IMU 센서 감지 · {class_name.split('_', 1)[1]}"
+    if class_name in ("초음파_좌측", "초음파_우측"):
+        return f"초음파 센서 감지 · {class_name.split('_', 1)[1]} 근접 · {distance:.2f}m"
     zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
     if ttc is not None:
         return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
@@ -403,7 +454,7 @@ def enhance_low_light(frame_bgr):
 
 # 실시간 영상 처리 (백그라운드 스레드에서 계속 실행)
 def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
-    global _latest_jpeg
+    global _latest_jpeg, _last_imu_impact
 
     frame_count = 0
     camera_failure_count = 0
@@ -593,6 +644,18 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                         "in_collision_zone": in_collision_zone,
                     }
 
+        ultrasonic_risk, ultrasonic_side, ultrasonic_cm = ultrasonic_sensor.get_worst_side()
+        if ultrasonic_risk != "SAFE" and RISK_RANK[ultrasonic_risk] > frame_worst_rank:
+            frame_worst_rank = RISK_RANK[ultrasonic_risk]
+            frame_worst_target = {
+                "risk": ultrasonic_risk,
+                "track_id": None,
+                "class_name": f"초음파_{ultrasonic_side}",
+                "distance": (ultrasonic_cm / 100.0) if ultrasonic_cm is not None else 0.0,
+                "ttc": None,
+                "in_collision_zone": True,
+            }
+
         if display_frame is not None:
             cv2.polylines(display_frame, [collision_zone], True, (255, 255, 0), 2)
             ok, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -601,6 +664,10 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                     _latest_jpeg = jpeg_buf.tobytes()
 
         imu_state = imu_sensor.get_imu_state()
+        if imu_state.get("impact") and not _last_imu_impact:
+            sound_impact_alarm()
+        _last_imu_impact = imu_state.get("impact", False)
+
         if imu_state.get("impact") or imu_state.get("rollover"):
             frame_worst_target = {
                 "risk": "DANGER",
@@ -614,7 +681,11 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         update_live_state(frame_worst_target)
 
         current_risk_key = frame_worst_target["risk"] if frame_worst_target is not None else "SAFE"
-        set_buzzer(current_risk_key in ("WARNING", "DANGER"))
+        set_buzzer(current_risk_key)
+        set_led(current_risk_key == "DANGER")
+
+        if _risk_sampler is not None:
+            _risk_sampler(current_risk_key.lower())
 
         if frame_worst_target is not None and _event_recorder is not None:
             worst_risk_key = frame_worst_target["risk"].lower()
@@ -783,7 +854,7 @@ tracker = None
 
 # Main 코드
 def main():
-    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter, _ble_server
+    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter, _ble_server, _risk_sampler
 
     print("1. 프로그램 시작됨...")
     yolo_onnx = "./yolov8n.onnx"
@@ -851,6 +922,7 @@ def main():
         _event_recorder = ble_server.record_ride_event
         _speed_getter = ble_server.get_current_speed_kmh
         _ble_server = ble_server
+        _risk_sampler = ble_server.record_risk_sample
         print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결, GPS는 폰에서 받음)")
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
