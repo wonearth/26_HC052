@@ -74,6 +74,12 @@ class RideSession:
         with self._lock:
             return self._active
 
+    def get_elapsed_sec(self):
+        with self._lock:
+            if not self._active or self._started_at is None:
+                return 0
+            return max(0, int((datetime.now(timezone.utc) - self._started_at).total_seconds()))
+
     def record_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """risk_key는 safe/caution/warning/danger. 위치는 안 담음 — 앱이 시각 기준으로 붙임.
 
@@ -159,6 +165,13 @@ class BlePeripheralServer:
     def record_ride_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """감지 루프에서 프레임마다 바로 호출 — 2초 폴링을 기다리지 않아 짧게 지나가는 위험도 놓치지 않음."""
         self._session.record_event(risk_key, track_id, object_class, distance_m, ttc_sec)
+
+    def get_ride_status(self):
+        """모니터링 대시보드용 — 라이딩 진행 여부와 경과 시간."""
+        return {
+            "active": self._session.is_active(),
+            "elapsed_sec": self._session.get_elapsed_sec(),
+        }
 
     def _on_control_write(self, value, options=None):
         command = value[0] if value else None

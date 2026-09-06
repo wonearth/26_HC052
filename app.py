@@ -10,6 +10,7 @@ import time
 from scipy.optimize import linear_sum_assignment
 from collections import deque
 from picamera2 import Picamera2
+from flask import Flask, Response, jsonify
 
 import ble_peripheral
 import imu_sensor
@@ -304,6 +305,38 @@ _live_state = {
 
 _event_recorder = None  # main()에서 BLE 세션 생성 후 연결됨 — record_ride_event(risk_key, track_id, class_name, distance, ttc)
 _speed_getter = None  # main()에서 연결됨 — get_current_speed_kmh() (폰이 보낸 최신 주행속도)
+_ble_server = None  # main()에서 연결됨 — get_ride_status() (개발자 모니터링 웹페이지용)
+
+# 개발자 모니터링 웹페이지용 (BGR)
+RISK_COLORS = {
+    "SAFE": (34, 197, 94),
+    "CAUTION": (4, 138, 202),
+    "WARNING": (12, 88, 234),
+    "DANGER": (38, 38, 220),
+}
+
+# 아무도 보고 있지 않으면 영상 합성/인코딩을 건너뛰어 라즈베리파이 부하를 아낀다.
+_video_viewers = 0
+_video_viewers_lock = threading.Lock()
+_frame_lock = threading.Lock()
+_latest_jpeg = None
+
+
+def _inc_viewers():
+    global _video_viewers
+    with _video_viewers_lock:
+        _video_viewers += 1
+
+
+def _dec_viewers():
+    global _video_viewers
+    with _video_viewers_lock:
+        _video_viewers = max(0, _video_viewers - 1)
+
+
+def _has_viewers():
+    with _video_viewers_lock:
+        return _video_viewers > 0
 
 
 def describe_target(class_name, distance, ttc, in_collision_zone):
@@ -395,6 +428,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         frame_count += 1
         h_orig, w_orig = frame.shape[:2]
         raw_frame = enhance_low_light(frame)  # 어두우면 명암 대비 보정 (밝으면 frame을 그대로 반환, 복사 없음)
+        display_frame = frame.copy() if _has_viewers() else None  # 보는 사람이 없으면 합성/인코딩 자체를 생략
 
         # =========================
         # YOLO 객체 탐지
@@ -537,6 +571,16 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
 
                 final_risk = get_final_risk(distance, ttc, in_collision_zone, stopping_distance)  # ⑥ 최종 위험도
 
+                if display_frame is not None:
+                    color = RISK_COLORS[final_risk]
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    label = f"{class_name} {distance:.1f}m"
+                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                    label_y1 = max(0, y1 - th - 8)
+                    cv2.rectangle(display_frame, (x1, label_y1), (x1 + tw + 6, y1), color, -1)
+                    cv2.putText(display_frame, label, (x1 + 3, y1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
                 rank = RISK_RANK[final_risk]
                 if rank > frame_worst_rank:
                     frame_worst_rank = rank
@@ -548,6 +592,13 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                         "ttc": ttc,
                         "in_collision_zone": in_collision_zone,
                     }
+
+        if display_frame is not None:
+            cv2.polylines(display_frame, [collision_zone], True, (255, 255, 0), 2)
+            ok, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if ok:
+                with _frame_lock:
+                    _latest_jpeg = jpeg_buf.tobytes()
 
         imu_state = imu_sensor.get_imu_state()
         if imu_state.get("impact") or imu_state.get("rollover"):
@@ -582,6 +633,147 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         fps = sum(fps_list) / len(fps_list)
 
 
+# =========================
+# 개발자용 실시간 모니터링 웹페이지 (Flask)
+# 최종 사용자용이 아니라, 우리가 개발/테스트 중 카메라·위험도·IMU 상태를 눈으로 확인하기 위한 용도.
+# =========================
+app = Flask(__name__)
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>PM ADAS 실시간 모니터링</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0B1220; color: #E5E7EB;
+    font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    min-height: 100vh; display: flex; flex-direction: column;
+  }
+  .titlebar {
+    background: #16213A; border-bottom: 1px solid #26324A;
+    text-align: center; padding: 18px; font-size: 20px; font-weight: 800; color: #fff;
+  }
+  .main { flex: 1; display: flex; gap: 16px; padding: 16px; }
+  .video-panel {
+    flex: 2; background: #000; border-radius: 12px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; min-height: 480px;
+  }
+  .video-panel img { width: 100%; height: 100%; object-fit: contain; }
+  .stats-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
+  .stat-card {
+    background: #16213A; border: 1px solid #26324A; border-radius: 12px;
+    padding: 14px 18px; display: flex; justify-content: space-between; align-items: center;
+  }
+  .stat-card .label { color: #9CA3AF; font-size: 13px; font-weight: 700; }
+  .stat-card .value { font-size: 20px; font-weight: 800; color: #22D3EE; font-variant-numeric: tabular-nums; }
+  .stat-card.risk-safe .value { color: #22C55E; }
+  .stat-card.risk-caution .value { color: #CA8A04; }
+  .stat-card.risk-warning .value { color: #EA580C; }
+  .stat-card.risk-danger .value { color: #DC2626; }
+  .stat-card .value.connected { color: #22C55E; }
+  .stat-card .value.disconnected { color: #6B7280; }
+  .footer {
+    background: #16213A; border-top: 1px solid #26324A;
+    text-align: center; padding: 16px; font-size: 18px; font-weight: 800; color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+  .footer .l { color: #9CA3AF; font-size: 13px; font-weight: 700; margin-right: 10px; }
+</style>
+</head>
+<body>
+  <div class="titlebar">PM ADAS 실시간 모니터링</div>
+  <div class="main">
+    <div class="video-panel"><img src="/video_feed" alt="카메라 영상"></div>
+    <div class="stats-panel">
+      <div class="stat-card"><span class="label">속도</span><span class="value" id="v-speed">0 km/h</span></div>
+      <div class="stat-card"><span class="label">TTC</span><span class="value" id="v-ttc">-</span></div>
+      <div class="stat-card" id="card-risk"><span class="label">위험도</span><span class="value" id="v-risk">SAFE</span></div>
+      <div class="stat-card"><span class="label">IMU</span><span class="value" id="v-imu">-</span></div>
+      <div class="stat-card"><span class="label">BLE</span><span class="value" id="v-ble">-</span></div>
+    </div>
+  </div>
+  <div class="footer"><span class="l">주행시간</span><span id="v-elapsed">00:00:00</span></div>
+
+<script>
+function fmtElapsed(sec) {
+  sec = Math.max(0, sec | 0);
+  const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+  const s = String(sec % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/dashboard_state");
+    const data = await res.json();
+
+    document.getElementById("v-speed").textContent = `${data.speed_kmh.toFixed(1)} km/h`;
+    document.getElementById("v-ttc").textContent = data.ttc_sec != null ? `${data.ttc_sec.toFixed(1)} s` : "-";
+    document.getElementById("v-risk").textContent = data.risk.toUpperCase();
+    document.getElementById("v-imu").textContent = data.imu_connected ? "NORMAL" : "미연결";
+    document.getElementById("v-ble").textContent = data.ride_active ? "Connected" : "대기 중";
+    document.getElementById("v-elapsed").textContent = fmtElapsed(data.elapsed_sec);
+
+    const bleEl = document.getElementById("v-ble");
+    bleEl.className = "value " + (data.ride_active ? "connected" : "disconnected");
+
+    const riskCard = document.getElementById("card-risk");
+    riskCard.className = "stat-card risk-" + data.risk;
+  } catch (e) {
+    // 파이 재시작 중 등 일시적 오류는 무시하고 다음 폴링에서 재시도
+  }
+}
+setInterval(poll, 1000);
+poll();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/")
+def dashboard():
+    return DASHBOARD_HTML
+
+
+def _stream_frames():
+    _inc_viewers()
+    try:
+        while True:
+            with _frame_lock:
+                jpeg = _latest_jpeg
+            if jpeg is not None:
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+            time.sleep(0.05)
+    finally:
+        _dec_viewers()
+
+
+@app.route("/video_feed")
+def video_feed():
+    return Response(_stream_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/api/dashboard_state")
+def dashboard_state():
+    state = get_live_state()
+    speed_kmh = _speed_getter() if _speed_getter is not None else 0.0
+    imu_state = imu_sensor.get_imu_state() or {}
+    ride_status = _ble_server.get_ride_status() if _ble_server is not None else {"active": False, "elapsed_sec": 0}
+    return jsonify({
+        "risk": state["risk"],
+        "message": state["message"],
+        "speed_kmh": speed_kmh,
+        "ttc_sec": state["ttc_sec"],
+        "imu_connected": bool(imu_state.get("connected", False)),
+        "ride_active": ride_status["active"],
+        "elapsed_sec": ride_status["elapsed_sec"],
+    })
+
+
 # 카메라/모델/트래커 전역 핸들 (스레드 간 공유)
 picam2 = None
 yolo_session = None
@@ -591,7 +783,7 @@ tracker = None
 
 # Main 코드
 def main():
-    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter
+    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter, _ble_server
 
     print("1. 프로그램 시작됨...")
     yolo_onnx = "./yolov8n.onnx"
@@ -658,14 +850,15 @@ def main():
         ble_thread.start()
         _event_recorder = ble_server.record_ride_event
         _speed_getter = ble_server.get_current_speed_kmh
+        _ble_server = ble_server
         print("6. BLE 주변장치 스레드 시작! (앱에서 QR 스캔 후 연결, GPS는 폰에서 받음)")
     except Exception as e:
         print(f"⚠️  BLE 주변장치 시작 실패 — 폰 앱 연동 없이 카메라 감지만 동작합니다: {e}")
 
-    print("🚀 준비 완료! 감지/BLE/IMU 스레드가 백그라운드에서 계속 돕니다. (Ctrl+C로 종료)")
+    print("🚀 준비 완료! http://<파이 IP>:5000 에서 실시간 모니터링 페이지를 볼 수 있습니다. (Ctrl+C로 종료)")
 
     try:
-        threading.Event().wait()  # 모든 실제 작업은 위 데몬 스레드들이 담당, 메인 스레드는 그냥 대기
+        app.run(host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
         print("종료 신호 수신, 정리 중...")
     finally:
