@@ -10,8 +10,8 @@ PORT = "/dev/ttyUSB0"
 BAUD_RATE = 115200
 
 COLLISION_G_THRESHOLD = 3.0
-ROLLOVER_ANGLE_THRESHOLD = 60.0
-ROLLOVER_TIME_THRESHOLD = 1.0
+ROLLOVER_ANGLE_THRESHOLD = 75.0  # 민감도 감소 (기존 60도 -> 더 크게 기울어야 감지)
+ROLLOVER_TIME_THRESHOLD = 1.5    # 민감도 감소 (기존 1초 -> 더 오래 지속돼야 감지)
 
 CONNECTED_TIMEOUT_SEC = 2.0  # 이 시간 안에 유효한 라인을 못 받으면 "미연결"로 판단
 EVENT_LATCH_SEC = 2.5        # 충돌/전복이 감지된 순간부터 이만큼은 화면에 계속 보이도록 유지

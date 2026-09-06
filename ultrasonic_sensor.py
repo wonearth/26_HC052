@@ -21,8 +21,8 @@ RIGHT_ECHO_PIN = 9
 # 구분하려면 그보다 넉넉하게 잡아야 함 (안 그러면 100cm 넘는 거리는 전부 뭉개짐)
 MAX_DISTANCE_M = 2.5
 
-SAFE_DISTANCE_CM = 150   # 이상이면 안전
-DANGER_DISTANCE_CM = 100  # 이하면 위험 (그 사이는 주의)
+SAFE_DISTANCE_CM = 105   # 이상이면 안전 (기존 150cm의 70%로 감소 — 덜 민감하게)
+DANGER_DISTANCE_CM = 70   # 이하면 위험 (기존 100cm의 70%로 감소, 그 사이는 주의)
 
 RISK_RANK = {"SAFE": 0, "CAUTION": 1, "DANGER": 2}
 

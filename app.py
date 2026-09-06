@@ -34,6 +34,7 @@ FOCAL_LENGTH = 524.0       # Camera Module 3 임시값, 추후 실제 캘리브�
 MAX_LOST_FRAMES = 5        # 객체를 잠깐 놓쳐도 ID 유지
 MOTION_THRESHOLD = 0.3     # 작은 거리 변화는 노이즈로 무시
 MIN_APPROACH_SPEED = 0.3   # TTC 계산 최소 접근속도
+STATIONARY_MARGIN_MPS = 0.5  # 접근속도가 "내 킥보드 속도 + 이 여유" 이내면 정지된 차로 판단
 
 REACTION_TIME_SEC = 0.7    # 라이더 반응 시간(실측 필요) — 이 시간 동안은 등속으로 더 나아간다고 가정
 DECELERATION_MPS2 = 3.5    # 킥보드 제동 감속도(m/s^2, 실측 필요)
@@ -614,7 +615,18 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 approach_speed = calculate_approach_speed(track_id)  # ③ 접근속도 계산
                 motion_state = get_motion_state(approach_speed)
 
-                ttc = calculate_ttc(distance, approach_speed) if motion_state == "APPROACHING" else None  # ④ TTC
+                # 주차된 차 판단: 카메라로 계산한 접근속도가 내 킥보드 속도로 설명되는 범위
+                # 안이면(자동차 자체는 안 움직이고 내가 다가가는 것뿐) TTC 기반 위험 판단에서 제외.
+                # 거리 자체가 가까우면(정지 가능 거리 이내) 아래 최종 위험도 판단에서 여전히 위험으로 잡힘.
+                is_stationary_car = (
+                    cls_id == 2
+                    and motion_state == "APPROACHING"
+                    and approach_speed <= (current_speed_kmh / 3.6) + STATIONARY_MARGIN_MPS
+                )
+
+                ttc = None
+                if motion_state == "APPROACHING" and not is_stationary_car:
+                    ttc = calculate_ttc(distance, approach_speed)  # ④ TTC
 
                 in_collision_zone = is_in_collision_zone(
                     x1, y1, x2, y2, collision_zone
