@@ -14,6 +14,12 @@ from picamera2 import Picamera2
 import ble_peripheral
 import imu_sensor
 
+try:
+    from gpiozero import Buzzer
+    _BUZZER_AVAILABLE = True
+except ImportError:
+    _BUZZER_AVAILABLE = False
+
 # 설정값
 YOLO_SIZE = 320
 CONF_THRESHOLD = 0.20
@@ -32,13 +38,39 @@ DECELERATION_MPS2 = 3.5    # 킥보드 제동 감속도(m/s^2, 실측 필요)
 
 # COCO 클래스: (이름, 평균 실제 높이 m)
 CLASS_INFO = {
-    0: ("Person", 1.7),
-    1: ("Bicycle", 1.6),
-    2: ("Car", 1.5),
-    3: ("Motorcycle", 1.6),
-    5: ("Bus", 3.0),
-    7: ("Truck", 2.5),
+    0: ("사람", 1.7),
+    1: ("자전거", 1.6),
+    2: ("자동차", 1.5),
+    3: ("오토바이", 1.6),
+    5: ("버스", 3.0),
+    7: ("트럭", 2.5),
 }
+
+BUZZER_GPIO_PIN = 17  # 실제 배선한 GPIO 핀 번호 (BCM 기준)
+
+buzzer = None
+if _BUZZER_AVAILABLE:
+    try:
+        buzzer = Buzzer(BUZZER_GPIO_PIN)
+        print(f"✅ 버저 초기화 완료 (GPIO {BUZZER_GPIO_PIN})")
+    except Exception as e:
+        print(f"⚠️  버저 초기화 실패 — 버저 없이 동작합니다: {e}")
+else:
+    print("⚠️  gpiozero 라이브러리가 없어 버저 없이 동작합니다 (pip3 install gpiozero)")
+
+_buzzer_active = False
+
+
+def set_buzzer(should_sound):
+    """상태가 바뀔 때만 GPIO를 건드림 — 매 프레임 호출해도 안전."""
+    global _buzzer_active
+    if buzzer is None or should_sound == _buzzer_active:
+        return
+    _buzzer_active = should_sound
+    if should_sound:
+        buzzer.beep(on_time=0.2, off_time=0.2, background=True)
+    else:
+        buzzer.off()
 
 cv2.setNumThreads(1)
 
@@ -486,7 +518,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             h_box = y2 - y1
             cls_id = target.cls_id
             track_id = target.track_id
-            class_name, real_h = CLASS_INFO.get(cls_id, ("Unknown", 1.5))
+            class_name, real_h = CLASS_INFO.get(cls_id, ("미확인 객체", 1.5))
 
             if h_box > 0:
                 distance = (real_h * FOCAL_LENGTH) / h_box  # ① 거리 추정
@@ -529,6 +561,9 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             }
 
         update_live_state(frame_worst_target)
+
+        current_risk_key = frame_worst_target["risk"] if frame_worst_target is not None else "SAFE"
+        set_buzzer(current_risk_key in ("WARNING", "DANGER"))
 
         if frame_worst_target is not None and _event_recorder is not None:
             worst_risk_key = frame_worst_target["risk"].lower()
