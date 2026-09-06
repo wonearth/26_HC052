@@ -745,6 +745,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .stat-card.risk-danger .value { color: #DC2626; }
   .stat-card .value.connected { color: #22C55E; }
   .stat-card .value.disconnected { color: #6B7280; }
+  .stat-card .value.imu-alert { color: #DC2626; }
   .footer {
     background: #16213A; border-top: 1px solid #26324A;
     text-align: center; padding: 16px; font-size: 18px; font-weight: 800; color: #fff;
@@ -784,7 +785,11 @@ async function poll() {
     document.getElementById("v-speed").textContent = `${data.speed_kmh.toFixed(1)} km/h`;
     document.getElementById("v-ttc").textContent = data.ttc_sec != null ? `${data.ttc_sec.toFixed(1)} s` : "-";
     document.getElementById("v-risk").textContent = data.risk.toUpperCase();
-    document.getElementById("v-imu").textContent = data.imu_connected ? "NORMAL" : "미연결";
+    document.getElementById("v-imu").textContent = data.imu_status;
+    document.getElementById("v-imu").className = "value " + (
+      data.imu_status === "정상" ? "connected" :
+      data.imu_status === "미연결" ? "disconnected" : "imu-alert"
+    );
     document.getElementById("v-ble").textContent = data.ride_active ? "Connected" : "대기 중";
     document.getElementById("v-elapsed").textContent = fmtElapsed(data.elapsed_sec);
 
@@ -832,14 +837,13 @@ def video_feed():
 def dashboard_state():
     state = get_live_state()
     speed_kmh = _speed_getter() if _speed_getter is not None else 0.0
-    imu_state = imu_sensor.get_imu_state() or {}
     ride_status = _ble_server.get_ride_status() if _ble_server is not None else {"active": False, "elapsed_sec": 0}
     return jsonify({
         "risk": state["risk"],
         "message": state["message"],
         "speed_kmh": speed_kmh,
         "ttc_sec": state["ttc_sec"],
-        "imu_connected": bool(imu_state.get("connected", False)),
+        "imu_status": imu_sensor.get_imu_status_label(),
         "ride_active": ride_status["active"],
         "elapsed_sec": ride_status["elapsed_sec"],
     })
