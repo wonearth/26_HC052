@@ -12,6 +12,8 @@ BAUD_RATE = 115200
 COLLISION_G_THRESHOLD = 3.0
 ROLLOVER_ANGLE_THRESHOLD = 75.0  # 민감도 감소 (기존 60도 -> 더 크게 기울어야 감지)
 ROLLOVER_TIME_THRESHOLD = 1.5    # 민감도 감소 (기존 1초 -> 더 오래 지속돼야 감지)
+TILT_RESET_GRACE_SEC = 0.3       # 센서 노이즈로 각도가 순간적으로 흔들려도
+                                  # 이 시간 안에 다시 기울어지면 지속시간 카운트를 리셋하지 않음
 
 CONNECTED_TIMEOUT_SEC = 2.0  # 이 시간 안에 유효한 라인을 못 받으면 "미연결"로 판단
 EVENT_LATCH_SEC = 2.5        # 충돌/전복이 감지된 순간부터 이만큼은 화면에 계속 보이도록 유지
@@ -110,6 +112,7 @@ def imu_reader_loop():
 
     rollover_start_time = 0.0
     is_rolling_over = False
+    last_tilted_at = 0.0
 
     try:
         ser = serial.Serial(
@@ -169,34 +172,36 @@ def imu_reader_loop():
                 abs(pitch) >= ROLLOVER_ANGLE_THRESHOLD
             )
 
+            now = time.time()
+
             if tilted:
 
                 if not is_rolling_over:
 
                     is_rolling_over = True
-                    rollover_start_time = time.time()
+                    rollover_start_time = now
 
-                else:
+                last_tilted_at = now
 
-                    duration = (
-                        time.time()
-                        - rollover_start_time
+                duration = now - rollover_start_time
+
+                if duration >= ROLLOVER_TIME_THRESHOLD:
+
+                    rollover = True
+
+                    print(
+                        f"[위험] 차량 전복! "
+                        f"Roll={roll:.1f}°, "
+                        f"Pitch={pitch:.1f}°"
                     )
-
-                    if duration >= ROLLOVER_TIME_THRESHOLD:
-
-                        rollover = True
-
-                        print(
-                            f"[위험] 차량 전복! "
-                            f"Roll={roll:.1f}°, "
-                            f"Pitch={pitch:.1f}°"
-                        )
 
             else:
 
-                is_rolling_over = False
-                rollover_start_time = 0.0
+                # 노이즈로 잠깐 각도가 떨어져도 TILT_RESET_GRACE_SEC 안에 다시
+                # 기울어지면 카운트를 이어가고, 이 시간을 넘겨야 진짜로 리셋함
+                if is_rolling_over and (now - last_tilted_at) >= TILT_RESET_GRACE_SEC:
+                    is_rolling_over = False
+                    rollover_start_time = 0.0
 
             # =========================
             # 상태 저장
