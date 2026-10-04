@@ -740,59 +740,122 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PM ADAS 실시간 모니터링</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0B1220; --card: #16213A; --line: #26324A; --muted: #9CA3AF; --text: #E5E7EB; --accent: #22D3EE;
+    --safe: #22C55E; --caution: #EAB308; --warning: #F97316; --danger: #EF4444;
+  }
+  html { background: var(--bg); }
   body {
-    background: #0B1220; color: #E5E7EB;
+    background: radial-gradient(1100px 520px at 72% -8%, #14233f 0%, var(--bg) 62%) fixed;
+    color: var(--text); min-height: 100vh; display: flex; flex-direction: column;
     font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
-    min-height: 100vh; display: flex; flex-direction: column;
   }
   .titlebar {
-    background: #16213A; border-bottom: 1px solid #26324A;
-    text-align: center; padding: 18px; font-size: 20px; font-weight: 800; color: #fff;
+    background: rgba(22,33,58,0.85); border-bottom: 1px solid var(--line); backdrop-filter: blur(6px);
+    text-align: center; padding: 16px; font-size: 20px; font-weight: 800; color: #fff; letter-spacing: 0.3px;
   }
-  .main { flex: 1; display: flex; gap: 16px; padding: 16px; }
+  .main { flex: 1; display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
   .video-panel {
-    flex: 2; background: #000; border-radius: 12px; overflow: hidden;
-    display: flex; align-items: center; justify-content: center; min-height: 480px;
+    flex: 2; aspect-ratio: 4 / 3; background: #000; border: 1px solid var(--line); border-radius: 16px;
+    overflow: hidden; align-self: flex-start; position: sticky; top: 16px;
+    display: flex; align-items: center; justify-content: center;
   }
   .video-panel img { width: 100%; height: 100%; object-fit: contain; }
-  .stats-panel { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 260px; }
+  .side { flex: 1; min-width: 340px; display: flex; flex-direction: column; gap: 12px; }
+
   .stat-card {
-    background: #16213A; border: 1px solid #26324A; border-radius: 12px;
-    padding: 14px 18px; display: flex; justify-content: space-between; align-items: center;
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px;
+    display: flex; justify-content: space-between; align-items: center;
   }
-  .stat-card .label { color: #9CA3AF; font-size: 13px; font-weight: 700; }
-  .stat-card .value { font-size: 20px; font-weight: 800; color: #22D3EE; font-variant-numeric: tabular-nums; }
-  .stat-card .value.small { font-size: 14px; font-weight: 700; text-align: right; max-width: 70%; color: #E5E7EB; }
-  .footer .ver { color: #6B7280; font-size: 12px; font-weight: 600; margin-left: 24px; }
-  .stat-card.risk-safe .value { color: #22C55E; }
-  .stat-card.risk-caution .value { color: #CA8A04; }
-  .stat-card.risk-warning .value { color: #EA580C; }
-  .stat-card.risk-danger .value { color: #DC2626; }
-  .stat-card .value.connected { color: #22C55E; }
+  .stat-card .label { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.4px; }
+  .stat-card .value { font-size: 20px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .stat-card .value.small { font-size: 14px; font-weight: 700; text-align: right; max-width: 70%; color: var(--text); }
+  .stat-card .value.connected { color: var(--safe); }
   .stat-card .value.disconnected { color: #6B7280; }
-  .stat-card .value.imu-alert { color: #DC2626; }
+  .stat-card .value.imu-alert { color: var(--danger); }
+
+  /* 위험도: 가장 눈에 띄게 */
+  .stat-card.hero { padding: 16px 18px; border-left: 5px solid var(--line); }
+  .stat-card.hero .value { font-size: 30px; letter-spacing: 1px; }
+  .stat-card.risk-safe    { border-left-color: var(--safe); }
+  .stat-card.risk-caution { border-left-color: var(--caution); }
+  .stat-card.risk-warning { border-left-color: var(--warning); }
+  .stat-card.risk-danger  { border-left-color: var(--danger); box-shadow: 0 0 0 1px rgba(239,68,68,.35), 0 0 22px rgba(239,68,68,.18); }
+  .stat-card.risk-safe .value    { color: var(--safe); }
+  .stat-card.risk-caution .value { color: var(--caution); }
+  .stat-card.risk-warning .value { color: var(--warning); }
+  .stat-card.risk-danger .value  { color: var(--danger); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .stat-card.mini { flex-direction: column; align-items: flex-start; gap: 4px; }
+
+  /* 레이더 카드 */
+  .radar { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 12px; }
+  .radar-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .radar-title { font-size: 13px; font-weight: 800; letter-spacing: 0.4px; display: flex; align-items: center; gap: 8px; }
+  .radar-title .dot { width: 8px; height: 8px; border-radius: 50%; background: #6B7280; }
+  .radar.ok .radar-title .dot { background: var(--safe); box-shadow: 0 0 8px var(--safe); animation: blink 1.6s infinite; }
+  .radar.lost .radar-title .dot { background: var(--caution); }
+  @keyframes blink { 50% { opacity: .35; } }
+  .pill { font-size: 11px; font-weight: 800; padding: 3px 10px; border-radius: 999px; border: 1px solid; }
+  .pill.off  { color: #9CA3AF; border-color: #374151; background: rgba(55,65,81,.35); }
+  .pill.ok   { color: var(--safe); border-color: rgba(34,197,94,.5); background: rgba(34,197,94,.12); }
+  .pill.lost { color: var(--caution); border-color: rgba(234,179,8,.5); background: rgba(234,179,8,.12); }
+  #radar-canvas { width: 100%; height: 300px; display: block; border-radius: 10px; background: #0E1830; border: 1px solid #1d2a47; }
+  .radar-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .radar-stats > div { background: #0E1830; border: 1px solid #1d2a47; border-radius: 10px; padding: 8px 10px; }
+  .radar-stats .k { display: block; color: var(--muted); font-size: 11px; font-weight: 700; margin-bottom: 2px; }
+  .radar-stats .v { font-size: 17px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .radar-meta { margin-top: 8px; color: #6B7C93; font-size: 11px; text-align: center; }
+
   .footer {
-    background: #16213A; border-top: 1px solid #26324A;
-    text-align: center; padding: 16px; font-size: 18px; font-weight: 800; color: #fff;
-    font-variant-numeric: tabular-nums;
+    background: rgba(22,33,58,0.85); border-top: 1px solid var(--line);
+    text-align: center; padding: 14px; font-size: 18px; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums;
   }
-  .footer .l { color: #9CA3AF; font-size: 13px; font-weight: 700; margin-right: 10px; }
+  .footer .l { color: var(--muted); font-size: 13px; font-weight: 700; margin-right: 10px; }
+  .footer .ver { color: #6B7280; font-size: 12px; font-weight: 600; margin-left: 24px; }
+
+  @media (max-width: 900px) {
+    .main { flex-direction: column; }
+    .video-panel { width: 100%; position: static; }
+    .side { width: 100%; min-width: 0; }
+  }
 </style>
 </head>
 <body>
   <div class="titlebar">PM ADAS 실시간 모니터링</div>
   <div class="main">
     <div class="video-panel"><img src="/video_feed" alt="카메라 영상"></div>
-    <div class="stats-panel">
-      <div class="stat-card"><span class="label">속도</span><span class="value" id="v-speed">0 km/h</span></div>
-      <div class="stat-card"><span class="label">TTC</span><span class="value" id="v-ttc">-</span></div>
-      <div class="stat-card" id="card-risk"><span class="label">위험도</span><span class="value" id="v-risk">SAFE</span></div>
-      <div class="stat-card"><span class="label">IMU</span><span class="value" id="v-imu">-</span></div>
-      <div class="stat-card"><span class="label">BLE</span><span class="value" id="v-ble">-</span></div>
+
+    <div class="side">
+      <div class="stat-card hero" id="card-risk"><span class="label">위험도</span><span class="value" id="v-risk">SAFE</span></div>
+
+      <div class="grid2">
+        <div class="stat-card mini"><span class="label">속도</span><span class="value" id="v-speed">0 km/h</span></div>
+        <div class="stat-card mini"><span class="label">TTC</span><span class="value" id="v-ttc">-</span></div>
+        <div class="stat-card mini"><span class="label">IMU</span><span class="value" id="v-imu">-</span></div>
+        <div class="stat-card mini"><span class="label">BLE</span><span class="value" id="v-ble">-</span></div>
+      </div>
+
       <div class="stat-card"><span class="label">감지</span><span class="value small" id="v-msg">-</span></div>
+
+      <div class="radar" id="radar-card">
+        <div class="radar-head">
+          <span class="radar-title"><span class="dot"></span>레이더</span>
+          <span class="pill off" id="radar-pill">꺼짐</span>
+        </div>
+        <canvas id="radar-canvas"></canvas>
+        <div class="radar-stats">
+          <div><span class="k">거리</span><span class="v" id="r-dist">-</span></div>
+          <div><span class="k">접근속도</span><span class="v" id="r-speed">-</span></div>
+          <div><span class="k">TTC</span><span class="v" id="r-ttc">-</span></div>
+        </div>
+        <div class="radar-meta" id="r-meta">-</div>
+      </div>
     </div>
   </div>
   <div class="footer"><span class="l">주행시간</span><span id="v-elapsed">00:00:00</span><span class="ver">코드 버전 <span id="v-ver">-</span></span></div>
@@ -824,17 +887,145 @@ async function poll() {
     document.getElementById("v-msg").textContent = data.message;   // 시스템이 지금 감지한 대상 (한글은 브라우저가 그려서 깨지지 않음)
     document.getElementById("v-ver").textContent = data.version;
 
-    const bleEl = document.getElementById("v-ble");
-    bleEl.className = "value " + (data.ride_active ? "connected" : "disconnected");
-
-    const riskCard = document.getElementById("card-risk");
-    riskCard.className = "stat-card risk-" + data.risk;
+    document.getElementById("v-ble").className = "value " + (data.ride_active ? "connected" : "disconnected");
+    document.getElementById("card-risk").className = "stat-card hero risk-" + data.risk;
   } catch (e) {
     // 파이 재시작 중 등 일시적 오류는 무시하고 다음 폴링에서 재시도
   }
 }
 setInterval(poll, 1000);
 poll();
+
+// ---------------- 레이더 ----------------
+const RISK_COLORS = {safe: "#22C55E", caution: "#EAB308", warning: "#F97316", danger: "#EF4444"};
+const radarCanvas = document.getElementById("radar-canvas");
+
+function drawRadar(snap) {
+  const maxRange = snap.max_range_m || 25;
+  const corridor = snap.corridor_half_width_m || 1.0;
+  const dpr = window.devicePixelRatio || 1;
+  const W = radarCanvas.clientWidth, H = radarCanvas.clientHeight;
+  if (radarCanvas.width !== Math.round(W * dpr) || radarCanvas.height !== Math.round(H * dpr)) {
+    radarCanvas.width = Math.round(W * dpr);
+    radarCanvas.height = Math.round(H * dpr);
+  }
+  const ctx = radarCanvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const ox = W / 2, oy = H - 34;                       // 레이더(킥보드) 위치
+  const scale = (oy - 14) / maxRange;                  // 1m당 픽셀 (가로/세로 같은 비율)
+  const px = (x) => ox + x * scale, py = (y) => oy - y * scale;
+  const half = Math.PI / 3, top = -Math.PI / 2;
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+
+  // 부채꼴(시야 ±60°)
+  ctx.beginPath(); ctx.moveTo(ox, oy);
+  ctx.arc(ox, oy, maxRange * scale, top - half, top + half); ctx.closePath();
+  const g = ctx.createRadialGradient(ox, oy, 0, ox, oy, maxRange * scale);
+  g.addColorStop(0, "rgba(34,211,238,0.18)"); g.addColorStop(1, "rgba(34,211,238,0.03)");
+  ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = "rgba(34,211,238,0.35)"; ctx.lineWidth = 1; ctx.stroke();
+
+  // 각도선 ±30°
+  ctx.strokeStyle = "rgba(148,163,184,0.18)"; ctx.setLineDash([3, 4]);
+  for (const a of [-Math.PI / 6, Math.PI / 6]) {
+    ctx.beginPath(); ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + Math.sin(a) * maxRange * scale, oy - Math.cos(a) * maxRange * scale); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // 거리 호 (5m 단위)
+  ctx.font = "10px -apple-system, sans-serif"; ctx.textAlign = "right";   // 거리 글자는 복도 왼쪽에 둬서 점/복도와 안 겹치게
+  for (let r = 5; r <= maxRange; r += 5) {
+    ctx.strokeStyle = "rgba(148,163,184,0.22)";
+    ctx.beginPath(); ctx.arc(ox, oy, r * scale, top - half, top + half); ctx.stroke();
+    ctx.fillStyle = "#6B7C93"; ctx.fillText(r + "m", px(-corridor) - 6, py(r) - 3);
+  }
+
+  // 진행 복도
+  ctx.fillStyle = "rgba(250,204,21,0.10)";
+  ctx.fillRect(px(-corridor), py(maxRange), 2 * corridor * scale, maxRange * scale);
+  ctx.strokeStyle = "rgba(250,204,21,0.55)"; ctx.setLineDash([5, 4]);
+  ctx.beginPath(); ctx.moveTo(px(-corridor), oy); ctx.lineTo(px(-corridor), py(maxRange));
+  ctx.moveTo(px(corridor), oy); ctx.lineTo(px(corridor), py(maxRange)); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  // 감지된 점들
+  for (const [x, y] of snap.points || []) {
+    const inside = Math.abs(x) <= corridor;
+    ctx.beginPath(); ctx.arc(px(x), py(y), 3, 0, Math.PI * 2);
+    ctx.fillStyle = inside ? "#22D3EE" : "rgba(156,163,175,0.85)"; ctx.fill();
+  }
+
+  // 인정된 전방 대상
+  const t = snap.target;
+  if (t) {
+    const fwd = Math.sqrt(Math.max(0, t.distance_m * t.distance_m - t.lateral_m * t.lateral_m));
+    const cx = px(t.lateral_m), cy = py(fwd), color = RISK_COLORS[t.risk] || "#22D3EE";
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, 26);
+    glow.addColorStop(0, color + "88"); glow.addColorStop(1, color + "00");
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(cx, cy, 26, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "#fff"; ctx.stroke();
+    ctx.font = "800 12px -apple-system, sans-serif"; ctx.fillStyle = "#fff"; ctx.textAlign = "left";
+    const label = `${t.distance_m.toFixed(1)}m`;
+    ctx.fillText(label, Math.min(cx + 13, W - 42), cy + 4);
+  }
+
+  // 킥보드(레이더 위치)
+  ctx.fillStyle = "#E5E7EB";
+  ctx.beginPath(); ctx.roundRect ? ctx.roundRect(ox - 7, oy + 8, 14, 22, 4) : ctx.rect(ox - 7, oy + 8, 14, 22); ctx.fill();
+  ctx.fillStyle = "#0B1220"; ctx.fillRect(ox - 2, oy + 12, 4, 8);
+
+  // 수신 상태가 정상이 아닐 때 안내
+  if (snap.state !== "ok") {
+    ctx.fillStyle = "rgba(11,18,32,0.78)"; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = "center";
+    ctx.fillStyle = snap.state === "off" ? "#9CA3AF" : "#EAB308";
+    ctx.font = "800 16px -apple-system, sans-serif";
+    ctx.fillText(snap.state === "off" ? "레이더 꺼짐" : "레이더 신호 없음", W / 2, H / 2 - 6);
+    ctx.fillStyle = "#6B7C93"; ctx.font = "12px -apple-system, sans-serif";
+    ctx.fillText(snap.state === "off" ? "RADAR_ENABLED = False" : "USB 연결과 전원을 확인하세요", W / 2, H / 2 + 16);
+  }
+}
+
+function updateRadarPanel(snap) {
+  const card = document.getElementById("radar-card");
+  const pill = document.getElementById("radar-pill");
+  card.className = "radar " + (snap.state === "ok" ? "ok" : snap.state === "off" ? "" : "lost");
+  pill.className = "pill " + (snap.state === "ok" ? "ok" : snap.state === "off" ? "off" : "lost");
+  pill.textContent = snap.state === "ok" ? "수신 중" : snap.state === "off" ? "꺼짐" : "신호 없음";
+
+  const t = snap.target;
+  const color = t ? (RISK_COLORS[t.risk] || "#22D3EE") : "";
+  const set = (id, text) => { const el = document.getElementById(id); el.textContent = text; el.style.color = color; };
+  set("r-dist", t ? `${t.distance_m.toFixed(1)} m` : "-");
+  set("r-speed", t ? `${t.closing_speed_mps.toFixed(1)} m/s` : "-");
+  set("r-ttc", t && t.ttc_sec != null ? `${t.ttc_sec.toFixed(1)} s` : "-");
+
+  let meta;
+  if (snap.state === "ok") meta = `점 ${snap.num_points}개 · 프레임 ${snap.frames_ok} · ${snap.age_sec.toFixed(1)}초 전 수신${t ? "" : " · 전방 대상 없음"}`;
+  else if (snap.state === "off") meta = "레이더가 비활성화되어 있어요 (연결·설정 확인 후 켜기)";
+  else meta = snap.frames_ok > 0 ? `프레임 ${snap.frames_ok}개 수신 후 끊겼어요` : "아직 프레임을 받지 못했어요";
+  document.getElementById("r-meta").textContent = meta;
+}
+
+async function radarPoll() {
+  try {
+    const res = await fetch("/api/radar_state");
+    const snap = await res.json();
+    updateRadarPanel(snap);
+    drawRadar(snap);
+  } catch (e) {
+    // 일시적 오류는 무시
+  }
+  setTimeout(radarPoll, 250);   // 점이 움직이는 게 보이도록 0.25초마다
+}
+radarPoll();
 </script>
 </body>
 </html>
@@ -862,6 +1053,23 @@ def _stream_frames():
 @app.route("/video_feed")
 def video_feed():
     return Response(_stream_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@app.route("/api/radar_state")
+def radar_state():
+    """대시보드 레이더 화면용 — 연결 상태, 최근 점들, 인정된 전방 대상(+그 대상의 위험 단계). 0.25초마다 호출됨."""
+    snap = radar_reader.get_dashboard_snapshot()
+    target = snap["target"]
+    if target is not None:
+        target = dict(target)
+        target["risk"] = get_final_risk(
+            target["distance_m"], target["ttc_sec"], target["in_path"],
+            calculate_stopping_distance(_get_speed()),
+        ).lower()
+        snap["target"] = target
+    snap["max_range_m"] = radar_tracker.MAX_RANGE_M
+    snap["corridor_half_width_m"] = radar_tracker.CORRIDOR_HALF_WIDTH_M
+    return jsonify(snap)
 
 
 @app.route("/api/dashboard_state")
