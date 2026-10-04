@@ -6,19 +6,23 @@ import threading
 # =========================
 # IMU 설정
 # =========================
+
+# 현재 연결 상태
+# EBIMU      : /dev/ttyUSB0
+# Radar CLI  : /dev/ttyUSB1
+# Radar DATA : /dev/ttyUSB2
 PORT = "/dev/ttyUSB0"
 BAUD_RATE = 115200
 
 COLLISION_G_THRESHOLD = 3.0
-ROLLOVER_ANGLE_THRESHOLD = 75.0  # 민감도 감소 (기존 60도 -> 더 크게 기울어야 감지)
-ROLLOVER_TIME_THRESHOLD = 1.5    # 민감도 감소 (기존 1초 -> 더 오래 지속돼야 감지)
-TILT_RESET_GRACE_SEC = 0.3       # 센서 노이즈로 각도가 순간적으로 흔들려도
-                                  # 이 시간 안에 다시 기울어지면 지속시간 카운트를 리셋하지 않음
 
-CONNECTED_TIMEOUT_SEC = 2.0  # 이 시간 안에 유효한 라인을 못 받으면 "미연결"로 판단
-EVENT_LATCH_SEC = 2.5        # 충돌/전복이 감지된 순간부터 이만큼은 화면에 계속 보이도록 유지
-                              # (실제 이벤트는 샘플 한 줄에서만 잠깐 참이라, latch 없인
-                              # 1초 폴링 주기의 대시보드에서 놓치고 지나갈 수 있음)
+ROLLOVER_ANGLE_THRESHOLD = 75.0
+ROLLOVER_TIME_THRESHOLD = 1.5
+
+TILT_RESET_GRACE_SEC = 0.3
+
+CONNECTED_TIMEOUT_SEC = 2.0
+EVENT_LATCH_SEC = 2.5
 
 
 # =========================
@@ -37,9 +41,9 @@ _imu_state = {
     "acc_magnitude": None,
 }
 
-_last_data_at = 0.0    # time.monotonic() 기준 마지막으로 유효한 라인을 받은 시각
-_impact_until = 0.0    # 이 시각까지는 충돌 상태를 유지 (latch)
-_rollover_until = 0.0  # 이 시각까지는 전복 상태를 유지 (latch)
+_last_data_at = 0.0
+_impact_until = 0.0
+_rollover_until = 0.0
 
 
 # =========================
@@ -80,27 +84,48 @@ def parse_sensor_data(line):
 # 현재 IMU 상태 반환
 # =========================
 def get_imu_state():
-    """connected/impact/rollover는 저장된 값을 그대로 읽는 게 아니라 조회 시점 기준으로
-    다시 계산한다 — "포트가 열렸었는지"가 아니라 "최근에 실제로 유효한 데이터를 받았는지",
-    "그 순간이었는지"가 아니라 "최근 EVENT_LATCH_SEC 안에 감지된 적 있는지"를 반영하기 위함."""
+    """
+    connected:
+        최근 CONNECTED_TIMEOUT_SEC 안에
+        실제 유효 데이터를 받았는지 확인
+
+    impact / rollover:
+        최근 이벤트 발생 후 EVENT_LATCH_SEC 동안 유지
+    """
+
     with _state_lock:
+
         now = time.monotonic()
+
         state = dict(_imu_state)
-        state["connected"] = (now - _last_data_at) <= CONNECTED_TIMEOUT_SEC
+
+        state["connected"] = (
+            (now - _last_data_at)
+            <= CONNECTED_TIMEOUT_SEC
+        )
+
         state["impact"] = now < _impact_until
         state["rollover"] = now < _rollover_until
+
         return state
 
 
 def get_imu_status_label():
-    """대시보드 등 UI 표시용 — 미연결 > 충돌 감지 > 전복 감지 > 정상 순으로 판단."""
+    """
+    대시보드 표시용 상태
+    """
+
     state = get_imu_state()
+
     if not state["connected"]:
         return "미연결"
+
     if state["impact"]:
         return "충돌 감지"
+
     if state["rollover"]:
         return "전복 감지"
+
     return "정상"
 
 
@@ -108,57 +133,89 @@ def get_imu_status_label():
 # IMU 백그라운드 루프
 # =========================
 def imu_reader_loop():
-    global _last_data_at, _impact_until, _rollover_until
+
+    global _last_data_at
+    global _impact_until
+    global _rollover_until
 
     rollover_start_time = 0.0
     is_rolling_over = False
     last_tilted_at = 0.0
 
+    # -------------------------
+    # IMU 포트 연결
+    # -------------------------
     try:
+
         ser = serial.Serial(
             PORT,
             BAUD_RATE,
             timeout=0.1
         )
 
-        print(f"✅ IMU 포트 연결 완료: {PORT} ({BAUD_RATE} baud) — 유효 데이터 수신은 별도 확인 필요")
+        print(
+            f"✅ IMU 포트 연결 완료: "
+            f"{PORT} ({BAUD_RATE} baud)"
+        )
 
     except Exception as e:
 
-        print(f"❌ IMU 연결 실패: {e}")
+        print(
+            f"❌ IMU 연결 실패 "
+            f"({PORT}): {e}"
+        )
+
         return
 
+    # -------------------------
+    # IMU 데이터 수신
+    # -------------------------
     try:
 
         while True:
 
             if ser.in_waiting <= 0:
+
                 time.sleep(0.01)
                 continue
 
             raw_line = ser.readline()
-            sensor_values = parse_sensor_data(raw_line)
+
+            sensor_values = parse_sensor_data(
+                raw_line
+            )
 
             if sensor_values is None:
                 continue
 
-            roll, pitch, acc_x, acc_y, acc_z = sensor_values
+            (
+                roll,
+                pitch,
+                acc_x,
+                acc_y,
+                acc_z
+            ) = sensor_values
 
             # =========================
             # 1. 충돌 감지
             # =========================
             acc_magnitude = math.sqrt(
-                acc_x**2 +
-                acc_y**2 +
-                acc_z**2
+                acc_x**2
+                + acc_y**2
+                + acc_z**2
             )
 
-            impact = acc_magnitude >= COLLISION_G_THRESHOLD
+            impact = (
+                acc_magnitude
+                >= COLLISION_G_THRESHOLD
+            )
 
             if impact:
+
                 print(
                     f"[경고] 충돌 감지! "
-                    f"충격량: {acc_magnitude:.2f}g"
+                    f"충격량: "
+                    f"{acc_magnitude:.2f}g"
                 )
 
             # =========================
@@ -167,9 +224,11 @@ def imu_reader_loop():
             rollover = False
 
             tilted = (
-                abs(roll) >= ROLLOVER_ANGLE_THRESHOLD
+                abs(roll)
+                >= ROLLOVER_ANGLE_THRESHOLD
                 or
-                abs(pitch) >= ROLLOVER_ANGLE_THRESHOLD
+                abs(pitch)
+                >= ROLLOVER_ANGLE_THRESHOLD
             )
 
             now = time.time()
@@ -183,9 +242,14 @@ def imu_reader_loop():
 
                 last_tilted_at = now
 
-                duration = now - rollover_start_time
+                duration = (
+                    now - rollover_start_time
+                )
 
-                if duration >= ROLLOVER_TIME_THRESHOLD:
+                if (
+                    duration
+                    >= ROLLOVER_TIME_THRESHOLD
+                ):
 
                     rollover = True
 
@@ -197,9 +261,15 @@ def imu_reader_loop():
 
             else:
 
-                # 노이즈로 잠깐 각도가 떨어져도 TILT_RESET_GRACE_SEC 안에 다시
-                # 기울어지면 카운트를 이어가고, 이 시간을 넘겨야 진짜로 리셋함
-                if is_rolling_over and (now - last_tilted_at) >= TILT_RESET_GRACE_SEC:
+                if (
+                    is_rolling_over
+                    and
+                    (
+                        now - last_tilted_at
+                        >= TILT_RESET_GRACE_SEC
+                    )
+                ):
+
                     is_rolling_over = False
                     rollover_start_time = 0.0
 
@@ -208,7 +278,9 @@ def imu_reader_loop():
             # =========================
             with _state_lock:
 
-                _last_data_at = time.monotonic()
+                mono_now = time.monotonic()
+
+                _last_data_at = mono_now
 
                 _imu_state["roll"] = roll
                 _imu_state["pitch"] = pitch
@@ -217,17 +289,34 @@ def imu_reader_loop():
                 _imu_state["ay"] = acc_y
                 _imu_state["az"] = acc_z
 
-                _imu_state["acc_magnitude"] = acc_magnitude
+                _imu_state[
+                    "acc_magnitude"
+                ] = acc_magnitude
 
                 if impact:
-                    _impact_until = time.monotonic() + EVENT_LATCH_SEC
+
+                    _impact_until = (
+                        mono_now
+                        + EVENT_LATCH_SEC
+                    )
+
                 if rollover:
-                    _rollover_until = time.monotonic() + EVENT_LATCH_SEC
+
+                    _rollover_until = (
+                        mono_now
+                        + EVENT_LATCH_SEC
+                    )
 
     except Exception as e:
 
-        print(f"❌ IMU 읽기 오류: {e}")
+        print(
+            f"❌ IMU 읽기 오류 "
+            f"({PORT}): {e}"
+        )
 
     finally:
 
-        ser.close()
+        try:
+            ser.close()
+        except Exception:
+            pass
