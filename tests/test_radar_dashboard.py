@@ -72,6 +72,47 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(snap["num_points"], len(many))                  # 실제 점 개수는 그대로 보고
 
 
+class DiagnosticsTests(unittest.TestCase):
+    """"신호 없음"일 때 왜 그런지(바이트가 아예 안 옴 / 와도 해석 안 됨 / 설정 파일 없음 / 스레드 오류) 구분할 재료."""
+
+    def setUp(self):
+        rr._stats.update({"frames_ok": 0, "frames_bad": 0, "last_frame_at": 0.0, "last_num_points": 0, "bytes_in": 0, "cfg": "none"})
+        rr._latest_points[:] = []
+        self._enabled = rr.RADAR_ENABLED
+        rr.RADAR_ENABLED = True
+
+    def tearDown(self):
+        rr.RADAR_ENABLED = self._enabled
+
+    def test_bytes_are_counted_even_when_nothing_parses(self):
+        from test_radar_reader import FakeData
+        import radar_parser
+        ticks = {"n": 0}
+
+        def clock():
+            ticks["n"] += 1.0
+            return ticks["n"]
+
+        with self.assertRaises(TimeoutError):
+            rr.read_frames(FakeData([b"\x55" * 100, b"\x66" * 50]), radar_parser.FrameExtractor(),
+                           lambda parsed: None, no_data_timeout=6.0, clock=clock)
+        snap = rr.get_dashboard_snapshot()
+        self.assertEqual((snap["bytes_in"], snap["frames_ok"]), (150, 0))     # 데이터는 오는데 해석이 안 되는 경우
+
+    def test_snapshot_carries_cfg_result_and_worker_error(self):
+        rr._stats["cfg"] = "missing"
+        health = {"radar": {"state": "restarting", "restarts": 3, "last_error": "SerialException: could not open port"}}
+        with mock.patch("supervisor.get_health", return_value=health):
+            snap = rr.get_dashboard_snapshot()
+        self.assertEqual((snap["cfg"], snap["bytes_in"]), ("missing", 0))
+        self.assertIn("could not open port", snap["worker"]["last_error"])
+        self.assertEqual(snap["worker"]["restarts"], 3)
+
+    def test_worker_info_is_hidden_when_radar_is_disabled(self):
+        rr.RADAR_ENABLED = False
+        self.assertIsNone(rr.get_dashboard_snapshot()["worker"])
+
+
 def _import_app():
     for name in ("picamera2", "onnxruntime", "gpiozero", "serial", "bluezero"):
         if name not in sys.modules:

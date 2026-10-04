@@ -17,6 +17,7 @@ from pathlib import Path
 
 import radar_parser
 import radar_sensor
+import supervisor
 
 # 레이더가 없는 환경에서 재시작만 반복하지 않도록 기본은 꺼짐. 켜려면 환경변수 RADAR_ENABLED=1
 RADAR_ENABLED = os.environ.get("RADAR_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
@@ -47,7 +48,8 @@ RADAR_STALE_SEC = 2.0         # 대시보드: 이 시간 넘게 프레임이 없
 MAX_DASHBOARD_POINTS = 100    # 대시보드로 보내는 점 개수 상한 (가까운 점 우선)
 
 _stats_lock = threading.Lock()
-_stats = {"frames_ok": 0, "frames_bad": 0, "last_frame_at": 0.0, "last_num_points": 0}
+# bytes_in: 데이터 포트로 들어온 바이트 수(0이면 레이더가 아무것도 안 보냄), cfg: 설정 파일 전송 결과(none/sent/missing)
+_stats = {"frames_ok": 0, "frames_bad": 0, "last_frame_at": 0.0, "last_num_points": 0, "bytes_in": 0, "cfg": "none"}
 _latest_points = []  # 가장 최근 프레임의 점 [(x, y, v)] — 대시보드의 레이더 화면용
 
 on_frame = None  # 해석된 프레임이 올 때마다 호출될 함수(frame dict) — 전방 대상 추출이 여기에 연결됨
@@ -61,7 +63,7 @@ def get_stats():
 def _bump(**changes):
     with _stats_lock:
         for key, value in changes.items():
-            _stats[key] = _stats[key] + value if key.startswith("frames_") else value
+            _stats[key] = _stats[key] + value if key.startswith(("frames_", "bytes_")) else value
 
 
 def load_cfg_lines(path):
@@ -116,6 +118,9 @@ def get_dashboard_snapshot(now=None):
         "frames_ok": stats["frames_ok"],
         "frames_bad": stats["frames_bad"],
         "ports": list(find_ports()) if RADAR_ENABLED else None,   # 어느 포트를 쓰는지 화면에서 확인
+        "bytes_in": stats["bytes_in"],
+        "cfg": stats["cfg"],
+        "worker": supervisor.get_health().get("radar") if RADAR_ENABLED else None,   # 읽기 스레드의 상태와 마지막 오류
         "num_points": stats["last_num_points"] if live else 0,
         "points": points if live else [],          # 오래된 점은 보여주지 않음
         "target": radar_sensor.get_forward_target() if live else None,
@@ -139,6 +144,7 @@ def read_frames(data, extractor, handle, should_stop=lambda: False,
         chunk = data.read(4096)
         now = clock()
         if chunk:
+            _bump(bytes_in=len(chunk))
             extractor.add(chunk)
         for raw in extractor.iter_frames():
             parsed = radar_parser.parse_frame(raw)
@@ -163,9 +169,11 @@ def radar_reader_loop():
     try:
         if CFG_PATH.exists():
             send_cfg(cli, load_cfg_lines(CFG_PATH))
+            _bump(cfg="sent")
             print(f"✅ 레이더 설정 전송 완료 ({CFG_PATH.name})")
         else:
-            print(f"ℹ️  {CFG_PATH.name} 없음 — 이미 설정된 레이더로 보고 데이터만 읽습니다")
+            _bump(cfg="missing")
+            print(f"ℹ️  {CFG_PATH} 없음 — 이미 설정된 레이더로 보고 데이터만 읽습니다")
         read_frames(data, radar_parser.FrameExtractor(), handle_frame)
     finally:
         for port in (cli, data):

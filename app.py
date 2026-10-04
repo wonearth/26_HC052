@@ -810,7 +810,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   .radar-stats > div { background: #0E1830; border: 1px solid #1d2a47; border-radius: 10px; padding: 8px 10px; }
   .radar-stats .k { display: block; color: var(--muted); font-size: 11px; font-weight: 700; margin-bottom: 2px; }
   .radar-stats .v { font-size: 17px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
-  .radar-meta { margin-top: 8px; color: #6B7C93; font-size: 11px; text-align: center; }
+  .radar-meta { margin-top: 8px; color: #6B7C93; font-size: 11px; text-align: center; line-height: 1.5; word-break: break-all; }
+  .radar.lost .radar-meta { color: #EAB308; }
 
   .footer {
     background: rgba(22,33,58,0.85); border-top: 1px solid var(--line);
@@ -989,8 +990,24 @@ function drawRadar(snap) {
     ctx.font = "800 16px -apple-system, sans-serif";
     ctx.fillText(snap.state === "off" ? "레이더 꺼짐" : "레이더 신호 없음", W / 2, H / 2 - 6);
     ctx.fillStyle = "#6B7C93"; ctx.font = "12px -apple-system, sans-serif";
-    ctx.fillText(snap.state === "off" ? "RADAR_ENABLED=1 python3 app.py 로 켜기" : "USB 연결과 전원을 확인하세요", W / 2, H / 2 + 16);
+    ctx.fillText(snap.state === "off" ? "RADAR_ENABLED=1 python3 app.py 로 켜기" : radarDiagnosis(snap).short, W / 2, H / 2 + 16);
   }
+}
+
+// "신호 없음"일 때 왜 그런지 화면에서 바로 알 수 있게 — 짧은 문구(캔버스)와 자세한 문구(아래 줄)
+function radarDiagnosis(snap) {
+  const w = snap.worker;
+  if (w && w.last_error) {
+    const err = String(w.last_error);
+    return {short: "레이더 읽기 오류", detail: `오류: ${err.length > 110 ? err.slice(0, 110) + "…" : err} (재시작 ${w.restarts}회)`};
+  }
+  if (snap.bytes_in === 0 && snap.cfg === "missing")
+    return {short: "설정 파일(radar.cfg)이 없어요", detail: "radar.cfg가 없어 레이더에 설정을 못 보냈고, 레이더에서 아무 데이터도 안 와요 — 설정을 보내야 측정을 시작해요"};
+  if (snap.bytes_in === 0)
+    return {short: "레이더에서 데이터가 안 와요", detail: "데이터 포트로 들어온 바이트가 0이에요 — 데이터 포트가 맞는지, 설정을 보냈는지 확인하세요"};
+  if (snap.frames_ok === 0)
+    return {short: "데이터는 오는데 해석이 안 돼요", detail: `바이트 ${snap.bytes_in}개 수신, 정상 프레임 0개 (깨진 프레임 ${snap.frames_bad}) — 포트가 서로 바뀌었거나 프레임 형식이 달라요`};
+  return {short: "레이더 신호가 끊겼어요", detail: `프레임 ${snap.frames_ok}개 수신 후 끊겼어요 — USB 연결과 전원을 확인하세요`};
 }
 
 function updateRadarPanel(snap) {
@@ -1010,8 +1027,7 @@ function updateRadarPanel(snap) {
   let meta;
   if (snap.state === "ok") meta = `점 ${snap.num_points}개 · 프레임 ${snap.frames_ok} · ${snap.age_sec.toFixed(1)}초 전 수신${t ? "" : " · 전방 대상 없음"}`;
   else if (snap.state === "off") meta = "레이더가 꺼져 있어요 — RADAR_ENABLED=1 python3 app.py 로 실행하면 켜져요";
-  else meta = (snap.frames_ok > 0 ? `프레임 ${snap.frames_ok}개 수신 후 끊겼어요` : "아직 프레임을 받지 못했어요")
-    + (snap.ports ? ` · 포트 ${snap.ports[0]} / ${snap.ports[1]}` : "");
+  else meta = radarDiagnosis(snap).detail + (snap.ports ? ` · 포트 ${snap.ports[0]} / ${snap.ports[1]}` : "");
   document.getElementById("r-meta").textContent = meta;
 }
 
