@@ -15,6 +15,7 @@ from flask import Flask, Response, jsonify
 import ble_peripheral
 import imu_sensor
 import ultrasonic_sensor
+import radar_reader
 import radar_sensor
 import risk_arbiter
 import supervisor
@@ -927,6 +928,12 @@ def main():
 
     supervisor.run_supervised("imu", imu_sensor.imu_reader_loop)
     print("5. IMU 사고 감지 스레드 시작! (끊겨도 자동 재연결 시도)")
+
+    if radar_reader.RADAR_ENABLED:
+        supervisor.run_supervised("radar", radar_reader.radar_reader_loop)
+        print("5-1. 레이더 읽기 스레드 시작! (끊겨도 자동 재연결 시도)")
+    else:
+        print("5-1. 레이더 비활성화 (radar_reader.RADAR_ENABLED=False) — 브링업 확인 후 켜기")
 
     try:
         ble_server = ble_peripheral.BlePeripheralServer(
