@@ -115,6 +115,13 @@ class AppWiringTests(unittest.TestCase):
         self.assertEqual(self.recorded[-1][0:3], ("warning", 3, "사람"))
 
 
+    def test_overlay_labels_are_ascii_and_cover_every_detected_class(self):
+        # 영상 위 라벨은 OpenCV 4.x 기본 글꼴로 그려지므로 ASCII여야 한다 (한글이면 ???로 깨짐)
+        a = self.app
+        self.assertEqual(set(a.OVERLAY_LABELS), set(a.CLASS_INFO))
+        for label in a.OVERLAY_LABELS.values():
+            self.assertTrue(label.isascii(), label)
+
     def test_describe_target_marks_radar_confirmation(self):
         a = self.app
         self.assertIn("레이더 확인", a.describe_target("사람", 6.0, 3.0, True, "camera+radar"))
