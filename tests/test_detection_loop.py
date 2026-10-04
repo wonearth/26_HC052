@@ -28,10 +28,19 @@ def _install_hw_stubs():
                 sys.modules[name] = mock.MagicMock()
 
 
+class StopLoop(BaseException):
+    """시험이 끝났을 때 감지 루프를 확실히 멈추기 위한 신호. 루프는 Exception만 잡으므로 BaseException으로 빠져나간다."""
+
+
 class FakeCamera:
-    """640x480 RGB 프레임을 계속 돌려준다."""
+    """640x480 RGB 프레임을 계속 돌려주다가, stop이 켜지면 루프를 끝낸다."""
+
+    def __init__(self, stop):
+        self.stop = stop
 
     def capture_array(self, name):
+        if self.stop.is_set():
+            raise StopLoop()
         time.sleep(0.005)
         return np.full((480, 640, 3), 90, dtype=np.uint8)
 
@@ -71,11 +80,13 @@ class DetectionLoopTests(unittest.TestCase):
         a._latest_jpeg = None
         a._arbiter = StubArbiter()
         a._speed_getter = lambda: 15.0
-        error = {}
+        error, stop = {}, threading.Event()
 
         def target():
             try:
-                a.detection_loop(FakeCamera(), yolo, "images", a.SimpleByteTracker())
+                a.detection_loop(FakeCamera(stop), yolo, "images", a.SimpleByteTracker())
+            except StopLoop:
+                pass                      # 시험이 끝나서 정상적으로 멈춘 것
             except BaseException as e:   # 감시기가 없으니 여기서 직접 잡아 시험에 보고
                 error["e"] = e
 
@@ -84,14 +95,20 @@ class DetectionLoopTests(unittest.TestCase):
         t = threading.Thread(target=target, daemon=True)
         t.start()
         time.sleep(seconds)
+        alive_while_running = t.is_alive()
+        jpeg = a._latest_jpeg
+        # 스레드를 확실히 끝내고 나서 다음 시험으로 — 이전 시험의 루프가 계속 돌며 다음 시험에 끼어드는 것을 막음
+        stop.set()
+        t.join(timeout=3)
         if viewers:
             a._dec_viewers()
-        return error, a._arbiter, a._latest_jpeg, t
+        self.assertFalse(t.is_alive(), "감지 루프가 멈추지 않음")
+        return error, a._arbiter, jpeg, alive_while_running
 
     def test_loop_runs_without_exception_and_produces_a_video_frame(self):
         error, arbiter, jpeg, thread = self.run_loop(FakeYolo(with_person=True))
         self.assertNotIn("e", error, f"감지 루프가 예외로 죽음: {error.get('e')!r}")
-        self.assertTrue(thread.is_alive())
+        self.assertTrue(thread)   # 시험하는 동안 루프가 살아 있었음
         self.assertIsNotNone(jpeg, "영상 스트림용 JPEG이 만들어지지 않음 → 화면이 안 나옴")
         image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
         self.assertEqual(image.shape[:2], (480, 640))
