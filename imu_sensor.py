@@ -8,10 +8,10 @@ import threading
 # =========================
 
 # 현재 연결 상태
-# Radar CLI  : /dev/ttyUSB0
-# Radar DATA : /dev/ttyUSB1
-# EBIMU      : /dev/ttyUSB2
-PORT = "/dev/ttyUSB2"
+# EBIMU      : /dev/ttyUSB0
+# Radar CLI  : /dev/ttyUSB1
+# Radar DATA : /dev/ttyUSB2
+PORT = "/dev/ttyUSB0"
 BAUD_RATE = 115200
 
 COLLISION_G_THRESHOLD = 3.0

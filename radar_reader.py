@@ -2,13 +2,15 @@
 레이더 시리얼 읽기: 설정(.cfg)을 명령 포트로 보내고,
 데이터 포트에서 프레임을 받아 파싱한다.
 
-Raspberry Pi + TI AWR6843ISK에서 직접 확인한 포트:
-- /dev/ttyUSB0 -> CLI  (115200)
-- /dev/ttyUSB1 -> DATA (921600)
+현재 Raspberry Pi 연결:
+- /dev/ttyUSB0 -> IMU
+- /dev/ttyUSB1 -> Radar CLI  (CP2105 Enhanced, 115200)
+- /dev/ttyUSB2 -> Radar DATA (CP2105 Standard, 921600)
 
-확인 방법:
-- /dev/ttyUSB0에 115200 baud로 'version' 명령 전송
-- xWR68xx / mmWave SDK 03.06.02.00 응답 확인
+변경 사항:
+- 정상 프레임이 몇 초간 없다는 이유만으로 reader를 종료하지 않음
+- 실제 SerialException 등 시리얼 오류가 발생했을 때만
+  radar_reader_loop가 종료되어 supervisor가 재시작하도록 함
 """
 
 import threading
@@ -25,21 +27,26 @@ import radar_sensor
 
 RADAR_ENABLED = True
 
-# 명령(CLI) 포트
-# 직접 version 명령 응답을 확인한 포트
-CLI_PORT = "/dev/ttyUSB0"
+# 레이더 명령(CLI) 포트
+# CP2105 Enhanced Com Port
+CLI_PORT = "/dev/ttyUSB1"
 CLI_BAUD = 115200
 
 # 레이더 데이터 출력 포트
-DATA_PORT = "/dev/ttyUSB1"
+# CP2105 Standard Com Port
+DATA_PORT = "/dev/ttyUSB2"
 DATA_BAUD = 921600
 
 CFG_PATH = Path(__file__).with_name("radar.cfg")
 
+# cfg 명령 한 줄에 대한 응답 대기 시간
 CFG_LINE_TIMEOUT_SEC = 1.5
-NO_DATA_RESTART_SEC = 5.0
 
-RADAR_STALE_SEC = 2.0
+# 마지막 정상 프레임 이후 이 시간이 지나면
+# 대시보드에서는 일시적으로 no_signal 표시
+# 단, reader 스레드를 종료하지는 않음
+RADAR_STALE_SEC = 5.0
+
 MAX_DASHBOARD_POINTS = 100
 
 
@@ -140,7 +147,9 @@ def get_dashboard_snapshot(now=None):
     state:
         off       = 레이더 비활성화
         ok        = 정상 프레임 수신 중
-        no_signal = 활성화됐지만 프레임 없음
+        no_signal = 최근 정상 프레임이 없음
+
+    no_signal이 되어도 radar reader 자체는 종료하지 않는다.
     """
 
     now = (
@@ -234,23 +243,28 @@ def read_frames(
     extractor,
     handle,
     should_stop=lambda: False,
-    no_data_timeout=NO_DATA_RESTART_SEC,
-    clock=time.monotonic,
 ):
     """
-    데이터 포트에서 레이더 프레임을 읽는다.
-    """
+    데이터 포트에서 레이더 프레임을 계속 읽는다.
 
-    last_valid = clock()
+    정상 프레임이 일정 시간 없더라도
+    TimeoutError를 발생시키지 않는다.
+
+    실제 USB/시리얼 연결에 문제가 발생하면
+    data.read()에서 SerialException 등이 발생하고
+    상위 supervisor가 reader를 재시작한다.
+    """
 
     while not should_stop():
 
+        # 실제 장치가 끊기면 여기서
+        # SerialException이 발생하여 상위로 전달됨
         chunk = data.read(4096)
 
-        now = clock()
+        if not chunk:
+            continue
 
-        if chunk:
-            extractor.add(chunk)
+        extractor.add(chunk)
 
         for raw in extractor.iter_frames():
 
@@ -264,14 +278,6 @@ def read_frames(
             else:
 
                 handle(parsed)
-                last_valid = now
-
-        if now - last_valid > no_data_timeout:
-
-            raise TimeoutError(
-                f"레이더 프레임이 "
-                f"{no_data_timeout:.0f}초 넘게 안 옴"
-            )
 
 
 def radar_reader_loop():
@@ -279,7 +285,8 @@ def radar_reader_loop():
     레이더 시리얼 읽기 스레드.
 
     supervisor가 실행하며,
-    오류 발생 시 supervisor가 다시 시작한다.
+    실제 시리얼 오류가 발생하여 함수가 종료되면
+    supervisor가 다시 시작한다.
     """
 
     import serial
