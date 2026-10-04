@@ -1,10 +1,16 @@
 """
 레이더 시리얼 읽기: 설정(.cfg)을 명령 포트로 보내고, 데이터 포트에서 프레임을 받아 파싱한다.
 
-!! 실물 레이더로는 아직 검증하지 않았다 (1번 브링업에서 확인). 포트 이름/보레이트는 TI 보드의
-!! 일반적인 값(명령 115200, 데이터 921600, /dev/ttyACM0·1)이고, 다르면 아래 상수만 고치면 된다.
-RADAR_ENABLED가 False인 동안 app.py는 이 스레드를 시작하지 않는다.
+!! 실물 레이더로는 아직 검증하지 않았다 (브링업에서 확인).
+
+코드를 고치지 않고 환경변수로 설정한다 (고쳐서 커밋하지 않아도 되고 git pull이 충돌하지 않음):
+    RADAR_ENABLED=1 python3 app.py                   # 레이더 읽기 켜기 (기본은 꺼짐)
+    RADAR_CLI_PORT=/dev/ttyACM0 RADAR_DATA_PORT=/dev/ttyACM1   # 포트를 직접 지정 (생략하면 자동 탐색)
+    RADAR_CFG=/path/to/radar.cfg                     # 설정 파일 위치 (기본: 프로젝트 폴더의 radar.cfg)
+RADAR_ENABLED가 꺼져 있는 동안 app.py는 이 스레드를 시작하지 않는다.
 """
+import glob
+import os
 import threading
 import time
 from pathlib import Path
@@ -12,13 +18,27 @@ from pathlib import Path
 import radar_parser
 import radar_sensor
 
-RADAR_ENABLED = False  # 레이더 연결/설정 확인 전까지 꺼둠. 확인되면 True로 바꾸면 app.py가 스레드를 시작함
+# 레이더가 없는 환경에서 재시작만 반복하지 않도록 기본은 꺼짐. 켜려면 환경변수 RADAR_ENABLED=1
+RADAR_ENABLED = os.environ.get("RADAR_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
 
-CLI_PORT = "/dev/ttyACM0"
+CLI_PORT = "/dev/ttyACM0"    # 자동 탐색에 실패했을 때 쓰는 기본값
 CLI_BAUD = 115200
 DATA_PORT = "/dev/ttyACM1"
 DATA_BAUD = 921600
-CFG_PATH = Path(__file__).with_name("radar.cfg")  # 없으면 이미 설정된 레이더로 보고 설정 전송을 건너뜀
+CFG_PATH = Path(os.environ.get("RADAR_CFG") or Path(__file__).with_name("radar.cfg"))  # 없으면 이미 설정된 레이더로 보고 설정 전송을 건너뜀
+
+
+def find_ports():
+    """(명령 포트, 데이터 포트). 우선순위: 환경변수 → TI XDS110 자동 탐색 → 기본값(ttyACM0/1).
+    AWR6843ISK는 USB로 꽂으면 XDS110 장치로 보이고, 명령(User UART)은 -if00, 데이터(Aux Data Port)는 -if03.
+    ttyACM 번호는 부팅/연결 순서에 따라 바뀔 수 있어서 /dev/serial/by-id 이름으로 찾는 게 더 안전하다."""
+    cli, data = os.environ.get("RADAR_CLI_PORT"), os.environ.get("RADAR_DATA_PORT")
+    if not (cli and data):
+        by_id_cli = sorted(glob.glob("/dev/serial/by-id/*XDS110*-if00"))
+        by_id_data = sorted(glob.glob("/dev/serial/by-id/*XDS110*-if03"))
+        if by_id_cli and by_id_data:
+            cli, data = cli or by_id_cli[0], data or by_id_data[0]
+    return cli or CLI_PORT, data or DATA_PORT
 
 CFG_LINE_TIMEOUT_SEC = 1.5
 NO_DATA_RESTART_SEC = 5.0  # 이 시간 동안 유효 프레임이 없으면 예외 → 감시 스레드가 포트를 다시 열고 설정부터 재시도
@@ -95,6 +115,7 @@ def get_dashboard_snapshot(now=None):
         "age_sec": None if age is None else round(age, 2),
         "frames_ok": stats["frames_ok"],
         "frames_bad": stats["frames_bad"],
+        "ports": list(find_ports()) if RADAR_ENABLED else None,   # 어느 포트를 쓰는지 화면에서 확인
         "num_points": stats["last_num_points"] if live else 0,
         "points": points if live else [],          # 오래된 점은 보여주지 않음
         "target": radar_sensor.get_forward_target() if live else None,
@@ -135,8 +156,10 @@ def radar_reader_loop():
     """감시 스레드(supervisor)가 실행하는 본체. 예외로 끝나면 포트를 다시 열고 처음부터 재시도된다."""
     import serial  # Mac 등 pyserial이 없는 환경에서도 이 모듈을 import할 수 있게 지연 import
 
-    cli = serial.Serial(CLI_PORT, CLI_BAUD, timeout=0.1)
-    data = serial.Serial(DATA_PORT, DATA_BAUD, timeout=0.1)
+    cli_port, data_port = find_ports()
+    print(f"🔌 레이더 포트: 명령={cli_port}, 데이터={data_port}")
+    cli = serial.Serial(cli_port, CLI_BAUD, timeout=0.1)
+    data = serial.Serial(data_port, DATA_BAUD, timeout=0.1)
     try:
         if CFG_PATH.exists():
             send_cfg(cli, load_cfg_lines(CFG_PATH))

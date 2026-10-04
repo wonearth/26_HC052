@@ -989,7 +989,7 @@ function drawRadar(snap) {
     ctx.font = "800 16px -apple-system, sans-serif";
     ctx.fillText(snap.state === "off" ? "레이더 꺼짐" : "레이더 신호 없음", W / 2, H / 2 - 6);
     ctx.fillStyle = "#6B7C93"; ctx.font = "12px -apple-system, sans-serif";
-    ctx.fillText(snap.state === "off" ? "RADAR_ENABLED = False" : "USB 연결과 전원을 확인하세요", W / 2, H / 2 + 16);
+    ctx.fillText(snap.state === "off" ? "RADAR_ENABLED=1 python3 app.py 로 켜기" : "USB 연결과 전원을 확인하세요", W / 2, H / 2 + 16);
   }
 }
 
@@ -1009,8 +1009,9 @@ function updateRadarPanel(snap) {
 
   let meta;
   if (snap.state === "ok") meta = `점 ${snap.num_points}개 · 프레임 ${snap.frames_ok} · ${snap.age_sec.toFixed(1)}초 전 수신${t ? "" : " · 전방 대상 없음"}`;
-  else if (snap.state === "off") meta = "레이더가 비활성화되어 있어요 (연결·설정 확인 후 켜기)";
-  else meta = snap.frames_ok > 0 ? `프레임 ${snap.frames_ok}개 수신 후 끊겼어요` : "아직 프레임을 받지 못했어요";
+  else if (snap.state === "off") meta = "레이더가 꺼져 있어요 — RADAR_ENABLED=1 python3 app.py 로 실행하면 켜져요";
+  else meta = (snap.frames_ok > 0 ? `프레임 ${snap.frames_ok}개 수신 후 끊겼어요` : "아직 프레임을 받지 못했어요")
+    + (snap.ports ? ` · 포트 ${snap.ports[0]} / ${snap.ports[1]}` : "");
   document.getElementById("r-meta").textContent = meta;
 }
 
@@ -1173,7 +1174,7 @@ def main():
         supervisor.run_supervised("radar", radar_reader.radar_reader_loop)
         print("5-1. 레이더 읽기 스레드 시작! (끊겨도 자동 재연결 시도)")
     else:
-        print("5-1. 레이더 비활성화 (radar_reader.RADAR_ENABLED=False) — 브링업 확인 후 켜기")
+        print("5-1. 레이더 꺼짐 — 켜려면 RADAR_ENABLED=1 python3 app.py 로 실행하세요")
 
     try:
         ble_server = ble_peripheral.BlePeripheralServer(

@@ -22,8 +22,9 @@ import radar_reader
 
 def main():
     ap = argparse.ArgumentParser(description="레이더 브링업 확인 도구")
-    ap.add_argument("--cli", default=radar_reader.CLI_PORT)
-    ap.add_argument("--data", default=radar_reader.DATA_PORT)
+    auto_cli, auto_data = radar_reader.find_ports()
+    ap.add_argument("--cli", default=auto_cli, help=f"명령 포트 (기본: 자동 탐색 → {auto_cli})")
+    ap.add_argument("--data", default=auto_data, help=f"데이터 포트 (기본: 자동 탐색 → {auto_data})")
     ap.add_argument("--cfg", default=None, help=".cfg 경로 (생략하면 설정 전송 안 함)")
     ap.add_argument("--seconds", type=float, default=30.0)
     ap.add_argument("--log", default=None, help="프레임을 저장할 .jsonl 경로")
