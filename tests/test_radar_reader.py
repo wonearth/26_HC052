@@ -59,6 +59,7 @@ class ReadFramesTests(unittest.TestCase):
     def setUp(self):
         rr._stats.update({"frames_ok": 0, "frames_bad": 0, "last_frame_at": 0.0, "last_num_points": 0})
         rr.on_frame = None
+        rr._latest_points[:] = []
 
     def test_frames_reach_handler_in_order_and_garbage_is_counted(self):
         stream = (build_frame([(0, 5, 0, -1)], frame_number=1) + b"\x01\x02\x03"
@@ -102,7 +103,8 @@ class ReadFramesTests(unittest.TestCase):
     def test_handle_frame_updates_stats_and_calls_hook(self):
         seen = []
         rr.on_frame = seen.append
-        rr.handle_frame({"points": [1, 2, 3], "frame_number": 9})
+        points = [{"x": 0.1 * i, "y": 5.0 + i, "z": 0.0, "v": -1.0, "range_m": 5.0 + i} for i in range(3)]
+        rr.handle_frame({"points": points, "frame_number": 9})
         stats = rr.get_stats()
         self.assertEqual((stats["frames_ok"], stats["last_num_points"]), (1, 3))
         self.assertGreater(stats["last_frame_at"], 0)

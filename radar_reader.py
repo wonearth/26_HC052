@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import radar_parser
+import radar_sensor
 
 RADAR_ENABLED = False  # 레이더 연결/설정 확인 전까지 꺼둠. 확인되면 True로 바꾸면 app.py가 스레드를 시작함
 
@@ -22,8 +23,12 @@ CFG_PATH = Path(__file__).with_name("radar.cfg")  # 없으면 이미 설정된 �
 CFG_LINE_TIMEOUT_SEC = 1.5
 NO_DATA_RESTART_SEC = 5.0  # 이 시간 동안 유효 프레임이 없으면 예외 → 감시 스레드가 포트를 다시 열고 설정부터 재시도
 
+RADAR_STALE_SEC = 2.0         # 대시보드: 이 시간 넘게 프레임이 없으면 "신호 없음"으로 표시
+MAX_DASHBOARD_POINTS = 100    # 대시보드로 보내는 점 개수 상한 (가까운 점 우선)
+
 _stats_lock = threading.Lock()
 _stats = {"frames_ok": 0, "frames_bad": 0, "last_frame_at": 0.0, "last_num_points": 0}
+_latest_points = []  # 가장 최근 프레임의 점 [(x, y, v)] — 대시보드의 레이더 화면용
 
 on_frame = None  # 해석된 프레임이 올 때마다 호출될 함수(frame dict) — 전방 대상 추출이 여기에 연결됨
 
@@ -68,7 +73,38 @@ def send_cfg(cli, lines, timeout=CFG_LINE_TIMEOUT_SEC, log=print):
         log(f"  cfg ok: {line}")
 
 
+def get_dashboard_snapshot(now=None):
+    """웹 대시보드용 레이더 상태: 연결 상태, 최근 점들, 인정된 전방 대상.
+    state: "off"(비활성화) / "ok"(수신 중) / "no_signal"(켜져 있는데 프레임이 안 옴)"""
+    now = time.monotonic() if now is None else now
+    with _stats_lock:
+        stats = dict(_stats)
+        points = list(_latest_points)
+    last = stats["last_frame_at"]
+    age = (now - last) if last > 0 else None
+    if not RADAR_ENABLED:
+        state = "off"
+    elif age is None or age > RADAR_STALE_SEC:
+        state = "no_signal"
+    else:
+        state = "ok"
+    live = state == "ok"
+    return {
+        "enabled": RADAR_ENABLED,
+        "state": state,
+        "age_sec": None if age is None else round(age, 2),
+        "frames_ok": stats["frames_ok"],
+        "frames_bad": stats["frames_bad"],
+        "num_points": stats["last_num_points"] if live else 0,
+        "points": points if live else [],          # 오래된 점은 보여주지 않음
+        "target": radar_sensor.get_forward_target() if live else None,
+    }
+
+
 def handle_frame(parsed):
+    nearest = sorted(parsed["points"], key=lambda p: p["range_m"])[:MAX_DASHBOARD_POINTS]
+    with _stats_lock:
+        _latest_points[:] = [[round(p["x"], 2), round(p["y"], 2), round(p["v"], 2)] for p in nearest]
     _bump(frames_ok=1, last_frame_at=time.monotonic(), last_num_points=len(parsed["points"]))
     if on_frame is not None:
         on_frame(parsed)
