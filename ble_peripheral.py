@@ -44,6 +44,26 @@ CHUNK_PAYLOAD_SIZE = 150       # 청크당 payload 바이트 수 (MTU 여유를 
 LIVE_STATUS_INTERVAL_SEC = 2.0  # 실시간 위험도 notify 주기
 EVENT_COOLDOWN_SEC = 3.0       # 같은 대상이 연속으로 이벤트를 계속 만들지 않도록 최소 간격
 
+# 폰 속도 수신이 끊겼을 때(블루투스 끊김 등) 감도가 갑자기 떨어지지 않도록 하는 폴백
+SPEED_FRESH_SEC = 5.0     # 이 안에 받은 값은 최신으로 취급
+SPEED_HOLD_SEC = 60.0     # 주행 중이면 마지막 속도를 이 시간까지 유지
+SPEED_DEFAULT_KMH = 12.0  # 그 뒤에도 못 받으면 중간 속도로 가정 (0으로 두면 둔감, 너무 높으면 오경보)
+
+
+def resolve_speed_kmh(last_kmh, updated_at, now, ride_active):
+    """폰이 보낸 마지막 속도와 수신 시각으로 지금 쓸 속도를 정한다."""
+    if updated_at <= 0.0:
+        return 0.0                      # 한 번도 못 받음
+    age = now - updated_at
+    if age <= SPEED_FRESH_SEC:
+        return last_kmh
+    if not ride_active:
+        return 0.0                      # 주행 중이 아니면 오래된 값을 쓰지 않음
+    if age <= SPEED_HOLD_SEC:
+        return last_kmh
+    return SPEED_DEFAULT_KMH
+
+
 RISK_TO_KOREAN = {"safe": "안전", "caution": "주의", "warning": "경고", "danger": "위험"}
 # 위험도별 초당 감점 (실측 필요) — 이벤트 "개수"가 아니라 "노출 시간"으로 감점해서
 # 라이딩 시간에 자연히 정규화되게 함 (좁은 공간에서 같은 대상이 track_id를 바꿔가며
@@ -179,10 +199,11 @@ class BlePeripheralServer:
         self._speed_updated_at = time.monotonic()
 
     def get_current_speed_kmh(self):
-        """5초 넘게 갱신이 없으면(연결 끊김 등) 0으로 폴백 — 속도를 부풀린 채로 굳는 것 방지."""
-        if time.monotonic() - self._speed_updated_at > 5.0:
-            return 0.0
-        return self._current_speed_kmh
+        """블루투스가 끊겨 속도가 안 와도 주행 중엔 마지막 속도를 유지해 감도가 떨어지지 않게 함
+        (자세한 규칙은 resolve_speed_kmh)."""
+        return resolve_speed_kmh(
+            self._current_speed_kmh, self._speed_updated_at, time.monotonic(), self._session.is_active()
+        )
 
     def record_ride_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """감지 루프에서 프레임마다 바로 호출 — 2초 폴링을 기다리지 않아 짧게 지나가는 위험도 놓치지 않음."""
