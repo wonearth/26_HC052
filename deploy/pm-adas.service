@@ -1,0 +1,39 @@
+# PM ADAS 자동 실행 서비스 (라즈베리파이용 템플릿)
+#
+# 설치 (파이에서):
+#   1) 아래 User / WorkingDirectory / ExecStart 경로를 실제 환경에 맞게 고친다.
+#      (가상환경을 쓰면 ExecStart의 python3를 그 가상환경의 python 경로로)
+#   2) sudo cp deploy/pm-adas.service /etc/systemd/system/pm-adas.service
+#   3) sudo systemctl daemon-reload
+#   4) sudo systemctl enable --now pm-adas        # 부팅 시 자동 시작 + 지금 시작
+#
+# 자주 쓰는 명령:
+#   sudo systemctl status pm-adas                 # 상태 확인
+#   journalctl -u pm-adas -f                      # 실시간 로그 (예전에 터미널에 찍히던 내용)
+#   sudo systemctl stop pm-adas                   # 손으로 `python3 app.py` 실행해보기 전엔 반드시 먼저 끌 것
+#                                                 # (서비스가 카메라/GPIO/블루투스를 이미 잡고 있어서 충돌함)
+#   sudo systemctl restart pm-adas                # 코드 수정 후 반영
+
+[Unit]
+Description=PM ADAS (kickboard collision warning)
+After=bluetooth.target network.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/AdasPM
+ExecStart=/usr/bin/python3 -u app.py
+Environment=PYTHONUNBUFFERED=1
+
+# 프로그램이 죽으면 5초 뒤 자동 재시작. 연속으로 죽어도 포기하지 않음(카메라 케이블이 헐거운 경우 등).
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# 카메라(video), GPIO(gpio), IMU/레이더 시리얼(dialout), 블루투스(bluetooth) 접근 권한.
+# 서비스로 띄웠을 때 카메라/BLE가 안 되면 대부분 이 권한 문제이므로 파이에서 한 번 확인할 것.
+SupplementaryGroups=video gpio dialout bluetooth
+
+[Install]
+WantedBy=multi-user.target

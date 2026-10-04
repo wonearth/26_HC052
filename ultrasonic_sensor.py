@@ -12,6 +12,11 @@ try:
 except ImportError:
     _ULTRASONIC_AVAILABLE = False
 
+# 초음파 센서를 하드웨어에서 뺐다. False면 GPIO 핀을 아예 잡지 않고 항상 "안전"으로 보고한다
+# (센서가 없는데 핀을 열어두면 떠 있는 echo 핀의 노이즈가 가짜 거리값으로 읽힐 수 있음).
+# 다시 장착하면 True로 바꾸면 된다.
+ULTRASONIC_ENABLED = False
+
 LEFT_TRIG_PIN = 23
 LEFT_ECHO_PIN = 24
 RIGHT_TRIG_PIN = 10
@@ -29,7 +34,9 @@ RISK_RANK = {"SAFE": 0, "CAUTION": 1, "DANGER": 2}
 _sensor_left = None
 _sensor_right = None
 
-if _ULTRASONIC_AVAILABLE:
+if not ULTRASONIC_ENABLED:
+    print("ℹ️  초음파 센서 비활성화됨 (ULTRASONIC_ENABLED=False) — GPIO 23/24/10/9를 사용하지 않습니다")
+elif _ULTRASONIC_AVAILABLE:
     try:
         _sensor_left = DistanceSensor(echo=LEFT_ECHO_PIN, trigger=LEFT_TRIG_PIN, max_distance=MAX_DISTANCE_M)
         _sensor_right = DistanceSensor(echo=RIGHT_ECHO_PIN, trigger=RIGHT_TRIG_PIN, max_distance=MAX_DISTANCE_M)
@@ -48,7 +55,13 @@ else:
 def _distance_cm(sensor):
     if sensor is None:
         return None
-    return sensor.distance * 100.0
+    try:
+        return sensor.distance * 100.0
+    except Exception:
+        # 배선 불안정 등으로 echo 신호를 못 받으면 gpiozero가 예외를 던질 수 있음 —
+        # 여기서 흡수하지 않으면 이 값을 쓰는 detection_loop 스레드 전체가 죽어서
+        # 카메라 인식/LED/부저까지 한꺼번에 멈춰버림. 이번엔 그냥 "측정 안 됨"으로 처리.
+        return None
 
 
 def get_risk(distance_cm):

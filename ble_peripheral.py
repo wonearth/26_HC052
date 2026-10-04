@@ -22,6 +22,7 @@ import threading
 import time
 import uuid as uuid_lib
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     from bluezero import adapter, peripheral
@@ -44,6 +45,31 @@ CHUNK_PAYLOAD_SIZE = 150       # 청크당 payload 바이트 수 (MTU 여유를 
 LIVE_STATUS_INTERVAL_SEC = 2.0  # 실시간 위험도 notify 주기
 EVENT_COOLDOWN_SEC = 3.0       # 같은 대상이 연속으로 이벤트를 계속 만들지 않도록 최소 간격
 
+# 주행 기록 저널: 프로그램이 주행 중에 재시작돼도 그때까지의 이벤트를 잃지 않기 위해 파일에 이어 적는다.
+JOURNAL_PATH = Path(__file__).with_name("active_ride.jsonl")
+JOURNAL_MAX_AGE_SEC = 6 * 3600   # 이보다 오래된 저널은 복구하지 않음
+SNAPSHOT_INTERVAL_SEC = 5.0      # 위험 노출 시간 누적값을 저널에 저장하는 간격
+
+# 폰 속도 수신이 끊겼을 때(블루투스 끊김 등) 감도가 갑자기 떨어지지 않도록 하는 폴백
+SPEED_FRESH_SEC = 5.0     # 이 안에 받은 값은 최신으로 취급
+SPEED_HOLD_SEC = 60.0     # 주행 중이면 마지막 속도를 이 시간까지 유지
+SPEED_DEFAULT_KMH = 12.0  # 그 뒤에도 못 받으면 중간 속도로 가정 (0으로 두면 둔감, 너무 높으면 오경보)
+
+
+def resolve_speed_kmh(last_kmh, updated_at, now, ride_active):
+    """폰이 보낸 마지막 속도와 수신 시각으로 지금 쓸 속도를 정한다."""
+    if updated_at <= 0.0:
+        return 0.0                      # 한 번도 못 받음
+    age = now - updated_at
+    if age <= SPEED_FRESH_SEC:
+        return last_kmh
+    if not ride_active:
+        return 0.0                      # 주행 중이 아니면 오래된 값을 쓰지 않음
+    if age <= SPEED_HOLD_SEC:
+        return last_kmh
+    return SPEED_DEFAULT_KMH
+
+
 RISK_TO_KOREAN = {"safe": "안전", "caution": "주의", "warning": "경고", "danger": "위험"}
 # 위험도별 초당 감점 (실측 필요) — 이벤트 "개수"가 아니라 "노출 시간"으로 감점해서
 # 라이딩 시간에 자연히 정규화되게 함 (좁은 공간에서 같은 대상이 track_id를 바꿔가며
@@ -54,10 +80,71 @@ RISK_PENALTY_PER_SEC = {"위험": 2.0, "경고": 0.6, "주의": 0.15, "안전": 
 class RideSession:
     """주행 시작~종료 동안 카메라 위험 이벤트를 누적하고, 종료 시 하나의 JSON으로 요약한다."""
 
-    def __init__(self):
+    def __init__(self, journal_path=JOURNAL_PATH):
         self._lock = threading.Lock()
         self._active = False
+        self._journal_path = journal_path
+        self._journal_failed = False
+        self._last_snapshot_at = 0.0
         self._reset()
+
+    # ---- 저널 (재시작 복구용) ----
+    def _journal_write(self, obj, mode="a"):
+        if self._journal_path is None:
+            return
+        try:
+            with open(self._journal_path, mode, encoding="utf-8") as f:
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        except Exception as e:
+            if not self._journal_failed:  # 한 번만 알림 — 저널 실패가 주행 기록 자체를 막으면 안 됨
+                self._journal_failed = True
+                print(f"⚠️  주행 저널 쓰기 실패 — 재시작 복구 없이 계속합니다: {e}")
+
+    def restore(self):
+        """저널에 남은 주행이 있으면 복구한다. 복구했으면 True."""
+        path = self._journal_path
+        try:
+            if path is None or not path.exists():
+                return False
+            if time.time() - path.stat().st_mtime > JOURNAL_MAX_AGE_SEC:
+                return False
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return False
+
+        start, events, seconds, stopped = None, [], None, False
+        for line in lines:
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue  # 쓰던 도중 꺼져서 잘린 마지막 줄
+            kind = obj.pop("type", None)
+            if kind == "start":
+                start, events, seconds, stopped = obj, [], None, False
+            elif kind == "event":
+                events.append(obj)
+            elif kind == "risk":
+                seconds = obj.get("seconds", seconds)
+            elif kind == "stop":
+                stopped, seconds = True, obj.get("seconds", seconds)
+        if start is None:
+            return False
+        try:
+            started_at = datetime.fromisoformat(start["started_at"])
+            ride_uuid = start["uuid"]
+        except (KeyError, ValueError):
+            return False
+
+        with self._lock:
+            self._reset()
+            self._client_ride_uuid = ride_uuid
+            self._started_at = started_at
+            self._events = events
+            if seconds:
+                for level in RISK_PENALTY_PER_SEC:
+                    self._risk_seconds[level] = float(seconds.get(level, 0.0))
+            self._active = not stopped
+        return True
 
     def _reset(self):
         self._client_ride_uuid = None
@@ -73,6 +160,11 @@ class RideSession:
             self._active = True
             self._client_ride_uuid = str(uuid_lib.uuid4())
             self._started_at = datetime.now(timezone.utc)
+            self._last_snapshot_at = time.monotonic()
+            self._journal_write(
+                {"type": "start", "uuid": self._client_ride_uuid, "started_at": self._started_at.isoformat()},
+                mode="w",  # 새 주행이니 이전 저널을 덮어씀
+            )
 
     def is_active(self):
         with self._lock:
@@ -98,6 +190,9 @@ class RideSession:
                 if dt > 0:
                     self._risk_seconds[risk_level] = self._risk_seconds.get(risk_level, 0.0) + dt
             self._last_sample_at = now
+            if now - self._last_snapshot_at >= SNAPSHOT_INTERVAL_SEC:
+                self._last_snapshot_at = now
+                self._journal_write({"type": "risk", "seconds": dict(self._risk_seconds)})
 
     def record_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """risk_key는 safe/caution/warning/danger. 위치는 안 담음 — 앱이 시각 기준으로 붙임.
@@ -115,20 +210,25 @@ class RideSession:
             if now - last < EVENT_COOLDOWN_SEC:
                 return
             self._last_event_at[key] = now
-            self._events.append({
+            event = {
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
                 "risk_level": risk_level,
                 "object_class": object_class or "unknown",
                 "distance_m": distance_m if distance_m is not None else 0.0,
                 "ttc_sec": ttc_sec if ttc_sec is not None else 0.0,
-            })
+            }
+            self._events.append(event)
+            self._journal_write({"type": "event", **event})
 
     def stop_and_package(self):
         """활성 라이딩이 없으면 None. 있으면 종료 처리하고 BLE_PROTOCOL.md 스키마의 dict를 반환."""
         with self._lock:
             if self._client_ride_uuid is None:
                 return None
+            was_active = self._active
             self._active = False
+            if was_active:  # 재시도 STOP(이미 종료된 주행)에서는 중복 기록하지 않음
+                self._journal_write({"type": "stop", "seconds": dict(self._risk_seconds)})
             ended_at = datetime.now(timezone.utc)
             duration_sec = max(0, int((ended_at - self._started_at).total_seconds()))
             penalty = sum(
@@ -163,6 +263,8 @@ class BlePeripheralServer:
         self._imu_getter = imu_getter
         self._local_name = local_name
         self._session = RideSession()
+        if self._session.restore():
+            print("♻️  이전에 끊긴 주행 기록을 복구했습니다 (앱이 종료 신호를 보내면 이어서 전송)")
         self._periph = None
         self._live_thread = None
         self._stop_live = threading.Event()
@@ -179,10 +281,11 @@ class BlePeripheralServer:
         self._speed_updated_at = time.monotonic()
 
     def get_current_speed_kmh(self):
-        """5초 넘게 갱신이 없으면(연결 끊김 등) 0으로 폴백 — 속도를 부풀린 채로 굳는 것 방지."""
-        if time.monotonic() - self._speed_updated_at > 5.0:
-            return 0.0
-        return self._current_speed_kmh
+        """블루투스가 끊겨 속도가 안 와도 주행 중엔 마지막 속도를 유지해 감도가 떨어지지 않게 함
+        (자세한 규칙은 resolve_speed_kmh)."""
+        return resolve_speed_kmh(
+            self._current_speed_kmh, self._speed_updated_at, time.monotonic(), self._session.is_active()
+        )
 
     def record_ride_event(self, risk_key, track_id, object_class, distance_m, ttc_sec):
         """감지 루프에서 프레임마다 바로 호출 — 2초 폴링을 기다리지 않아 짧게 지나가는 위험도 놓치지 않음."""

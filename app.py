@@ -15,6 +15,11 @@ from flask import Flask, Response, jsonify
 import ble_peripheral
 import imu_sensor
 import ultrasonic_sensor
+import radar_reader
+import radar_sensor
+import radar_tracker
+import risk_arbiter
+import supervisor
 
 try:
     from gpiozero import Buzzer, LED
@@ -27,7 +32,7 @@ YOLO_SIZE = 320
 CONF_THRESHOLD = 0.20
 NMS_THRESHOLD = 0.45
 FRAME_SKIP = 2
-MAX_CAMERA_FAILURES = 10   # 연속 실패 시 '카메라 끊김'으로 상태 전환
+MAX_YOLO_FAILURES = 30     # YOLO 추론이 이만큼 연속 실패하면 스레드를 재시작(감시 스레드가 처리)
 LOW_LIGHT_THRESHOLD = 80   # 평균 밝기(0~255) 이하면 저조도 보정 적용
 
 FOCAL_LENGTH = 524.0       # Camera Module 3 임시값, 추후 실제 캘리브레이션
@@ -355,7 +360,21 @@ _event_recorder = None  # main()에서 BLE 세션 생성 후 연결됨 — recor
 _speed_getter = None  # main()에서 연결됨 — get_current_speed_kmh() (폰이 보낸 최신 주행속도)
 _ble_server = None  # main()에서 연결됨 — get_ride_status() (개발자 모니터링 웹페이지용)
 _risk_sampler = None  # main()에서 연결됨 — record_risk_sample(risk_key) (안전점수용 위험 노출 시간 누적)
-_last_imu_impact = False  # IMU 충격 경고음을 감지 "순간"에 한 번만 울리기 위한 이전 프레임 상태
+_arbiter = None  # main()에서 생성 — 모든 센서의 위험 판단을 모아 부저/LED/앱/기록으로 내보내는 중재자
+
+
+def _get_speed():
+    return _speed_getter() if _speed_getter is not None else 0.0
+
+
+def _sample_risk(risk_key):
+    if _risk_sampler is not None:
+        _risk_sampler(risk_key)
+
+
+def _record_event(*args):
+    if _event_recorder is not None:
+        _event_recorder(*args)
 
 # 개발자 모니터링 웹페이지용 (BGR)
 RISK_COLORS = {
@@ -389,15 +408,20 @@ def _has_viewers():
         return _video_viewers > 0
 
 
-def describe_target(class_name, distance, ttc, in_collision_zone):
+def describe_target(class_name, distance, ttc, in_collision_zone, source=None):
     if class_name in ("IMU_충돌", "IMU_전복"):
         return f"IMU 센서 감지 · {class_name.split('_', 1)[1]}"
     if class_name in ("초음파_좌측", "초음파_우측"):
         return f"초음파 센서 감지 · {class_name.split('_', 1)[1]} 근접 · {distance:.2f}m"
+    if class_name == "레이더_전방":
+        if ttc is not None:
+            return f"레이더 감지 · 전방 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
+        return f"레이더 감지 · 전방 {distance:.1f}m"
     zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
+    confirmed = " · 레이더 확인" if source == "camera+radar" else ""  # 카메라가 본 대상을 레이더가 같은 거리에서 확인
     if ttc is not None:
-        return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
-    return f"전방 {zone_desc} {class_name} 감지 · {distance:.1f}m"
+        return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m{confirmed}"
+    return f"전방 {zone_desc} {class_name} 감지 · {distance:.1f}m{confirmed}"
 
 
 def update_live_state(worst_target):
@@ -409,7 +433,8 @@ def update_live_state(worst_target):
         risk_key = worst_target["risk"]
         message = describe_target(
             worst_target["class_name"], worst_target["distance"],
-            worst_target["ttc"], worst_target["in_collision_zone"]
+            worst_target["ttc"], worst_target["in_collision_zone"],
+            worst_target.get("source"),
         )
         class_name = worst_target["class_name"]
         distance = worst_target["distance"]
@@ -455,10 +480,11 @@ def enhance_low_light(frame_bgr):
 
 # 실시간 영상 처리 (백그라운드 스레드에서 계속 실행)
 def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
-    global _latest_jpeg, _last_imu_impact
+    global _latest_jpeg
 
     frame_count = 0
     camera_failure_count = 0
+    yolo_failure_count = 0
     last_online_targets = []
     collision_zone = None
     collision_zone_dims = None
@@ -466,12 +492,16 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
     while True:
         start_time = time.time()
 
-        frame = picam2.capture_array("main")  # Camera Module 3 실시간 입력
+        try:
+            frame = picam2.capture_array("main")  # Camera Module 3 실시간 입력
+        except Exception as e:
+            print(f"❌ 카메라 읽기 예외: {e}")
+            frame = None
         if frame is None:
             camera_failure_count += 1
-            print(f"❌ 카메라 프레임 없음 ({camera_failure_count}회 연속)")
-            if camera_failure_count >= MAX_CAMERA_FAILURES:
-                mark_camera_offline()
+            if camera_failure_count == 1 or camera_failure_count % 50 == 0:  # 로그 도배 방지
+                print(f"❌ 카메라 프레임 없음 ({camera_failure_count}회 연속)")
+            # 값을 안 올리면 중재자가 일정 시간 뒤 "카메라 정보 없음"으로 처리하고 다른 센서로 계속 판단함
             time.sleep(0.1)
             continue
         camera_failure_count = 0
@@ -506,8 +536,12 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
             try:
                 yolo_outputs = yolo_session.run(None, {yolo_input_name: yolo_tensor})
             except Exception as e:
-                print(f"❌ YOLO 추론 오류: {e}")
-                break
+                yolo_failure_count += 1
+                print(f"❌ YOLO 추론 오류 ({yolo_failure_count}회 연속): {e}")
+                if yolo_failure_count >= MAX_YOLO_FAILURES:
+                    raise RuntimeError("YOLO 추론이 계속 실패함") from e  # 감시 스레드가 재시작
+                continue  # 이 프레임의 카메라 판단만 건너뜀 — 값이 안 올라가므로 중재자가 오래된 값을 버림
+            yolo_failure_count = 0
 
             predictions = np.squeeze(yolo_outputs[0]).T
             target_classes = {0, 1, 2, 3, 5, 7}
@@ -592,6 +626,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
 
         frame_worst_rank = -1
         frame_worst_target = None
+        zone_targets = []  # 진행 경로 안의 모든 카메라 대상 — 레이더와 거리를 맞춰볼 후보
 
         for target in last_online_targets:
             x1, y1, x2, y2 = map(int, target.bbox)
@@ -644,29 +679,20 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                     cv2.putText(display_frame, label, (x1 + 3, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+                target_info = {
+                    "risk": final_risk,
+                    "track_id": track_id,
+                    "class_name": class_name,
+                    "distance": distance,
+                    "ttc": ttc,
+                    "in_collision_zone": in_collision_zone,
+                }
+                if in_collision_zone:
+                    zone_targets.append(target_info)
                 rank = RISK_RANK[final_risk]
                 if rank > frame_worst_rank:
                     frame_worst_rank = rank
-                    frame_worst_target = {
-                        "risk": final_risk,
-                        "track_id": track_id,
-                        "class_name": class_name,
-                        "distance": distance,
-                        "ttc": ttc,
-                        "in_collision_zone": in_collision_zone,
-                    }
-
-        ultrasonic_risk, ultrasonic_side, ultrasonic_cm = ultrasonic_sensor.get_worst_side()
-        if ultrasonic_risk != "SAFE" and RISK_RANK[ultrasonic_risk] > frame_worst_rank:
-            frame_worst_rank = RISK_RANK[ultrasonic_risk]
-            frame_worst_target = {
-                "risk": ultrasonic_risk,
-                "track_id": None,
-                "class_name": f"초음파_{ultrasonic_side}",
-                "distance": (ultrasonic_cm / 100.0) if ultrasonic_cm is not None else 0.0,
-                "ttc": None,
-                "in_collision_zone": True,
-            }
+                    frame_worst_target = target_info
 
         if display_frame is not None:
             cv2.polylines(display_frame, [collision_zone], True, (255, 255, 0), 2)
@@ -675,40 +701,10 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 with _frame_lock:
                     _latest_jpeg = jpeg_buf.tobytes()
 
-        imu_state = imu_sensor.get_imu_state()
-        if imu_state.get("impact") and not _last_imu_impact:
-            sound_impact_alarm()
-        _last_imu_impact = imu_state.get("impact", False)
-
-        if imu_state.get("impact") or imu_state.get("rollover"):
-            frame_worst_target = {
-                "risk": "DANGER",
-                "track_id": None,
-                "class_name": "IMU_충돌" if imu_state.get("impact") else "IMU_전복",
-                "distance": 0.0,
-                "ttc": None,
-                "in_collision_zone": True,
-            }
-
-        update_live_state(frame_worst_target)
-
-        current_risk_key = frame_worst_target["risk"] if frame_worst_target is not None else "SAFE"
-        set_buzzer(current_risk_key)
-        set_led(current_risk_key == "DANGER")
-
-        if _risk_sampler is not None:
-            _risk_sampler(current_risk_key.lower())
-
-        if frame_worst_target is not None and _event_recorder is not None:
-            worst_risk_key = frame_worst_target["risk"].lower()
-            if worst_risk_key in ("warning", "danger"):
-                _event_recorder(
-                    worst_risk_key,
-                    frame_worst_target["track_id"],
-                    frame_worst_target["class_name"],
-                    frame_worst_target["distance"],
-                    frame_worst_target["ttc"],
-                )
+        # 카메라는 여기서 "내 위험 단계"만 올린다. 초음파/레이더/IMU 융합과 부저/LED/앱/기록은
+        # 중재자 스레드가 맡으므로, 이 스레드가 죽거나 멈춰도 나머지 센서의 경고는 계속 나간다.
+        if _arbiter is not None:
+            _arbiter.publish_camera(frame_worst_target, zone_targets)
 
         # FPS 계산 (콘솔 디버그용으로만 남김 — 화면에 그릴 곳이 없어짐)
         elapsed_time = max(time.time() - start_time, 0.001)
@@ -870,7 +866,7 @@ tracker = None
 
 # Main 코드
 def main():
-    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter, _ble_server, _risk_sampler
+    global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter, _ble_server, _risk_sampler, _arbiter
 
     print("1. 프로그램 시작됨...")
     yolo_onnx = "./yolov8n.onnx"
@@ -916,25 +912,43 @@ def main():
         max_lost_frames=MAX_LOST_FRAMES
     )
 
-    detection_thread = threading.Thread(
-        target=detection_loop,
-        args=(picam2, yolo_session, yolo_input_name, tracker),
-        daemon=True,
+    _arbiter = risk_arbiter.RiskArbiter(
+        speed_getter=_get_speed,
+        stopping_distance_fn=calculate_stopping_distance,
+        risk_fn=get_final_risk,
+        ultrasonic_fn=ultrasonic_sensor.get_worst_side,
+        radar_fn=radar_sensor.get_forward_target,
+        imu_fn=imu_sensor.get_imu_state,
+        on_state=update_live_state,
+        on_camera_offline=mark_camera_offline,
+        on_buzzer=set_buzzer,
+        on_led=set_led,
+        on_impact_alarm=sound_impact_alarm,
+        on_sample=_sample_risk,
+        on_event=_record_event,
     )
-    detection_thread.start()
-    print("4. 감지 스레드 시작!")
 
-    imu_thread = threading.Thread(target=imu_sensor.imu_reader_loop, daemon=True)
-    imu_thread.start()
-    print("5. IMU 사고 감지 스레드 시작!")
+    # 모든 스레드는 감시 하에 실행 — 죽거나 반환해도 로그를 남기고 자동 재시작
+    supervisor.run_supervised("arbiter", _arbiter.run)
+    supervisor.run_supervised("camera", detection_loop, args=(picam2, yolo_session, yolo_input_name, tracker))
+    print("4. 중재/감지 스레드 시작!")
+
+    supervisor.run_supervised("imu", imu_sensor.imu_reader_loop)
+    print("5. IMU 사고 감지 스레드 시작! (끊겨도 자동 재연결 시도)")
+
+    if radar_reader.RADAR_ENABLED:
+        radar_reader.on_frame = radar_tracker.handle_frame  # 점 목록 → 전방 대상 추출 → radar_sensor
+        supervisor.run_supervised("radar", radar_reader.radar_reader_loop)
+        print("5-1. 레이더 읽기 스레드 시작! (끊겨도 자동 재연결 시도)")
+    else:
+        print("5-1. 레이더 비활성화 (radar_reader.RADAR_ENABLED=False) — 브링업 확인 후 켜기")
 
     try:
         ble_server = ble_peripheral.BlePeripheralServer(
             live_state_getter=get_live_state,
             imu_getter=imu_sensor.get_imu_state,
         )
-        ble_thread = threading.Thread(target=ble_server.start, daemon=True)
-        ble_thread.start()
+        supervisor.run_supervised("ble", ble_server.start)
         _event_recorder = ble_server.record_ride_event
         _speed_getter = ble_server.get_current_speed_kmh
         _ble_server = ble_server
@@ -945,8 +959,14 @@ def main():
 
     print("🚀 준비 완료! http://<파이 IP>:5000 에서 실시간 모니터링 페이지를 볼 수 있습니다. (Ctrl+C로 종료)")
 
+    # 대시보드도 감시 스레드로 분리 — 포트 충돌 등으로 죽어도 감지/경고에는 영향이 없음
+    supervisor.run_supervised(
+        "dashboard", app.run,
+        kwargs=dict(host="0.0.0.0", port=5000, threaded=True, use_reloader=False),
+    )
+
     try:
-        app.run(host="0.0.0.0", port=5000, threaded=True, use_reloader=False)
+        threading.Event().wait()  # 실제 작업은 감시되는 스레드들이 담당, 메인 스레드는 대기
     except KeyboardInterrupt:
         print("종료 신호 수신, 정리 중...")
     finally:
