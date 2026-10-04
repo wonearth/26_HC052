@@ -122,6 +122,14 @@ class AppWiringTests(unittest.TestCase):
         for label in a.OVERLAY_LABELS.values():
             self.assertTrue(label.isascii(), label)
 
+    def test_dashboard_shows_code_version_and_detected_target(self):
+        a = self.app
+        self.assertTrue(isinstance(a.APP_VERSION, str) and a.APP_VERSION)   # git 해시 또는 "unknown"
+        for element_id in ("v-msg", "v-ver"):
+            self.assertIn(f'id="{element_id}"', a.DASHBOARD_HTML)
+        self.assertIn("data.message", a.DASHBOARD_HTML)
+        self.assertIn("data.version", a.DASHBOARD_HTML)
+
     def test_describe_target_marks_radar_confirmation(self):
         a = self.app
         self.assertIn("레이더 확인", a.describe_target("사람", 6.0, 3.0, True, "camera+radar"))

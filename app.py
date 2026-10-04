@@ -2,6 +2,7 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
+import subprocess
 import threading
 import cv2
 import numpy as np
@@ -26,6 +27,20 @@ try:
     _GPIO_AVAILABLE = True
 except ImportError:
     _GPIO_AVAILABLE = False
+
+def _detect_version():
+    """지금 실행 중인 코드의 git 커밋 해시. 대시보드와 시작 로그에 보여서 어떤 코드가 도는지 바로 확인."""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)), capture_output=True, text=True, timeout=2,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+APP_VERSION = _detect_version()
 
 # 설정값
 YOLO_SIZE = 320
@@ -751,6 +766,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .stat-card .label { color: #9CA3AF; font-size: 13px; font-weight: 700; }
   .stat-card .value { font-size: 20px; font-weight: 800; color: #22D3EE; font-variant-numeric: tabular-nums; }
+  .stat-card .value.small { font-size: 14px; font-weight: 700; text-align: right; max-width: 70%; color: #E5E7EB; }
+  .footer .ver { color: #6B7280; font-size: 12px; font-weight: 600; margin-left: 24px; }
   .stat-card.risk-safe .value { color: #22C55E; }
   .stat-card.risk-caution .value { color: #CA8A04; }
   .stat-card.risk-warning .value { color: #EA580C; }
@@ -776,9 +793,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <div class="stat-card" id="card-risk"><span class="label">위험도</span><span class="value" id="v-risk">SAFE</span></div>
       <div class="stat-card"><span class="label">IMU</span><span class="value" id="v-imu">-</span></div>
       <div class="stat-card"><span class="label">BLE</span><span class="value" id="v-ble">-</span></div>
+      <div class="stat-card"><span class="label">감지</span><span class="value small" id="v-msg">-</span></div>
     </div>
   </div>
-  <div class="footer"><span class="l">주행시간</span><span id="v-elapsed">00:00:00</span></div>
+  <div class="footer"><span class="l">주행시간</span><span id="v-elapsed">00:00:00</span><span class="ver">코드 버전 <span id="v-ver">-</span></span></div>
 
 <script>
 function fmtElapsed(sec) {
@@ -804,6 +822,8 @@ async function poll() {
     );
     document.getElementById("v-ble").textContent = data.ride_active ? "Connected" : "대기 중";
     document.getElementById("v-elapsed").textContent = fmtElapsed(data.elapsed_sec);
+    document.getElementById("v-msg").textContent = data.message;   // 시스템이 지금 감지한 대상 (한글은 브라우저가 그려서 깨지지 않음)
+    document.getElementById("v-ver").textContent = data.version;
 
     const bleEl = document.getElementById("v-ble");
     bleEl.className = "value " + (data.ride_active ? "connected" : "disconnected");
@@ -858,6 +878,7 @@ def dashboard_state():
         "imu_status": imu_sensor.get_imu_status_label(),
         "ride_active": ride_status["active"],
         "elapsed_sec": ride_status["elapsed_sec"],
+        "version": APP_VERSION,
     })
 
 
@@ -872,7 +893,7 @@ tracker = None
 def main():
     global picam2, yolo_session, yolo_input_name, tracker, _event_recorder, _speed_getter, _ble_server, _risk_sampler, _arbiter
 
-    print("1. 프로그램 시작됨...")
+    print(f"1. 프로그램 시작됨... (코드 버전 {APP_VERSION})")
     yolo_onnx = "./yolov8n.onnx"
 
     # Camera Module 3 초기화
