@@ -17,6 +17,7 @@ import imu_sensor
 import ultrasonic_sensor
 import radar_reader
 import radar_sensor
+import radar_tracker
 import risk_arbiter
 import supervisor
 
@@ -930,6 +931,7 @@ def main():
     print("5. IMU 사고 감지 스레드 시작! (끊겨도 자동 재연결 시도)")
 
     if radar_reader.RADAR_ENABLED:
+        radar_reader.on_frame = radar_tracker.handle_frame  # 점 목록 → 전방 대상 추출 → radar_sensor
         supervisor.run_supervised("radar", radar_reader.radar_reader_loop)
         print("5-1. 레이더 읽기 스레드 시작! (끊겨도 자동 재연결 시도)")
     else:
