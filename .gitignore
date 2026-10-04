@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .DS_Store
 users.db
+active_ride.jsonl
