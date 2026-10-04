@@ -408,7 +408,7 @@ def _has_viewers():
         return _video_viewers > 0
 
 
-def describe_target(class_name, distance, ttc, in_collision_zone):
+def describe_target(class_name, distance, ttc, in_collision_zone, source=None):
     if class_name in ("IMU_충돌", "IMU_전복"):
         return f"IMU 센서 감지 · {class_name.split('_', 1)[1]}"
     if class_name in ("초음파_좌측", "초음파_우측"):
@@ -418,9 +418,10 @@ def describe_target(class_name, distance, ttc, in_collision_zone):
             return f"레이더 감지 · 전방 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
         return f"레이더 감지 · 전방 {distance:.1f}m"
     zone_desc = "진행 경로 내" if in_collision_zone else "진행 경로 밖"
+    confirmed = " · 레이더 확인" if source == "camera+radar" else ""  # 카메라가 본 대상을 레이더가 같은 거리에서 확인
     if ttc is not None:
-        return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m"
-    return f"전방 {zone_desc} {class_name} 감지 · {distance:.1f}m"
+        return f"전방 {zone_desc} {class_name} 접근 · TTC {ttc:.1f}초 · {distance:.1f}m{confirmed}"
+    return f"전방 {zone_desc} {class_name} 감지 · {distance:.1f}m{confirmed}"
 
 
 def update_live_state(worst_target):
@@ -432,7 +433,8 @@ def update_live_state(worst_target):
         risk_key = worst_target["risk"]
         message = describe_target(
             worst_target["class_name"], worst_target["distance"],
-            worst_target["ttc"], worst_target["in_collision_zone"]
+            worst_target["ttc"], worst_target["in_collision_zone"],
+            worst_target.get("source"),
         )
         class_name = worst_target["class_name"]
         distance = worst_target["distance"]
@@ -624,6 +626,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
 
         frame_worst_rank = -1
         frame_worst_target = None
+        zone_targets = []  # 진행 경로 안의 모든 카메라 대상 — 레이더와 거리를 맞춰볼 후보
 
         for target in last_online_targets:
             x1, y1, x2, y2 = map(int, target.bbox)
@@ -676,17 +679,20 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                     cv2.putText(display_frame, label, (x1 + 3, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+                target_info = {
+                    "risk": final_risk,
+                    "track_id": track_id,
+                    "class_name": class_name,
+                    "distance": distance,
+                    "ttc": ttc,
+                    "in_collision_zone": in_collision_zone,
+                }
+                if in_collision_zone:
+                    zone_targets.append(target_info)
                 rank = RISK_RANK[final_risk]
                 if rank > frame_worst_rank:
                     frame_worst_rank = rank
-                    frame_worst_target = {
-                        "risk": final_risk,
-                        "track_id": track_id,
-                        "class_name": class_name,
-                        "distance": distance,
-                        "ttc": ttc,
-                        "in_collision_zone": in_collision_zone,
-                    }
+                    frame_worst_target = target_info
 
         if display_frame is not None:
             cv2.polylines(display_frame, [collision_zone], True, (255, 255, 0), 2)
@@ -698,7 +704,7 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
         # 카메라는 여기서 "내 위험 단계"만 올린다. 초음파/레이더/IMU 융합과 부저/LED/앱/기록은
         # 중재자 스레드가 맡으므로, 이 스레드가 죽거나 멈춰도 나머지 센서의 경고는 계속 나간다.
         if _arbiter is not None:
-            _arbiter.publish_camera(frame_worst_target)
+            _arbiter.publish_camera(frame_worst_target, zone_targets)
 
         # FPS 계산 (콘솔 디버그용으로만 남김 — 화면에 그릴 곳이 없어짐)
         elapsed_time = max(time.time() - start_time, 0.001)

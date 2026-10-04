@@ -115,5 +115,23 @@ class AppWiringTests(unittest.TestCase):
         self.assertEqual(self.recorded[-1][0:3], ("warning", 3, "사람"))
 
 
+    def test_describe_target_marks_radar_confirmation(self):
+        a = self.app
+        self.assertIn("레이더 확인", a.describe_target("사람", 6.0, 3.0, True, "camera+radar"))
+        self.assertNotIn("레이더 확인", a.describe_target("사람", 6.0, 3.0, True))
+
+    def test_fused_target_reaches_live_state_with_radar_confirmation(self):
+        a = self.app
+        self.radar.update_target(6.0, 2.0, 0.0)                    # 레이더: 6m, 초속 2m로 접근 → TTC 3.0초
+        self.arb.publish_camera({"risk": "DANGER", "track_id": 4, "class_name": "사람",
+                                 "distance": 5.0, "ttc": None, "in_collision_zone": True})
+        self.arb.tick()
+        live = a.get_live_state()
+        self.assertEqual(live["risk"], "warning")
+        self.assertIn("사람", live["message"])
+        self.assertIn("레이더 확인", live["message"])
+        self.assertIn(("beep", 0.15, 0.6, None), a.buzzer.calls)    # 경고 = 느린 패턴
+        self.assertEqual(self.recorded[-1][:3], ("warning", 4, "사람"))
+
 if __name__ == "__main__":
     unittest.main()

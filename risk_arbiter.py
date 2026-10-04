@@ -20,6 +20,11 @@ CAMERA_STALE_SEC = 1.5     # 이 시간 넘게 카메라 값이 안 오면 "카�
 STARTUP_GRACE_SEC = 10.0   # 부팅 직후 첫 프레임이 오기 전까지는 "카메라 끊김"으로 보지 않음
 LOG_INTERVAL_SEC = 10.0    # 같은 오류 로그는 이 간격으로만 출력 (20Hz로 도배 방지)
 
+# 카메라 대상과 레이더 대상을 "같은 대상"으로 보는 거리 차 허용치 (초기값 — 실제 로그로 맞출 것).
+# 카메라 거리(박스 높이 기반)는 멀수록 오차가 커서 거리에 비례해 넓힌다.
+MATCH_ABS_TOL_M = 2.0
+MATCH_REL_TOL = 0.25
+
 
 class RiskArbiter:
     def __init__(
@@ -56,16 +61,22 @@ class RiskArbiter:
 
         self._lock = threading.Lock()
         self._camera_target = None
+        self._camera_zone = []
         self._camera_at = 0.0
         self._created_at = time.monotonic()
         self._last_impact = False
         self._last_log_at = {}
 
     # ---- 카메라 쪽이 호출 ----
-    def publish_camera(self, target):
-        """카메라 한 프레임의 가장 위험한 대상(dict) 또는 None(위험 대상 없음)."""
+    def publish_camera(self, target, in_zone_targets=None):
+        """카메라 한 프레임의 가장 위험한 대상(dict) 또는 None(위험 대상 없음).
+        in_zone_targets: 진행 경로 안에 있는 모든 카메라 대상 — 레이더와 거리를 맞춰볼 후보.
+        생략하면 가장 위험한 대상이 진행 경로 안일 때 그것 하나만 후보로 쓴다."""
+        if in_zone_targets is None:
+            in_zone_targets = [target] if target and target.get("in_collision_zone") else []
         with self._lock:
             self._camera_target = target
+            self._camera_zone = list(in_zone_targets)
             self._camera_at = time.monotonic()
 
     # ---- 내부 ----
@@ -90,10 +101,21 @@ class RiskArbiter:
 
     def _camera_state(self, now):
         with self._lock:
-            target, at = self._camera_target, self._camera_at
+            target, zone, at = self._camera_target, self._camera_zone, self._camera_at
         fresh = at > 0.0 and (now - at) <= CAMERA_STALE_SEC
         offline = (not fresh) and (at > 0.0 or (now - self._created_at) > STARTUP_GRACE_SEC)
-        return (target if fresh else None), offline
+        return (target if fresh else None), (zone if fresh else []), offline
+
+    @staticmethod
+    def _match(radar, zone_targets):
+        """레이더 대상과 거리가 가장 비슷한 카메라 대상(허용 오차 안). 없으면 None."""
+        tolerance = max(MATCH_ABS_TOL_M, MATCH_REL_TOL * radar["distance_m"])
+        best, best_diff = None, None
+        for target in zone_targets:
+            diff = abs(target["distance"] - radar["distance_m"])
+            if diff <= tolerance and (best is None or diff < best_diff):
+                best, best_diff = target, diff
+        return best
 
     # ---- 한 번의 판단 ----
     def tick(self):
@@ -101,10 +123,45 @@ class RiskArbiter:
         speed = self._safe("속도", self._speed_getter, 0.0)
         stopping = self._safe("정지거리", lambda: self._stopping_distance_fn(speed), 0.0)
 
-        worst, camera_offline = self._camera_state(now)
-        rank = RISK_RANK[worst["risk"]] if worst else -1
+        cam_worst, cam_zone, camera_offline = self._camera_state(now)
 
-        # 초음파: 카메라보다 "더 높을 때만" 덮어씀 (기존과 같은 규칙)
+        # 카메라 + 레이더 조합 (복잡한 객체 매칭 없이 "거리가 비슷한가"만 본다)
+        #  - 둘 다 같은 대상을 봄: 레이더의 정확한 거리/TTC로 위험도를 계산하고 이름은 카메라 것을 씀
+        #  - 한쪽만 봄 / 서로 다른 대상을 봄: 각자의 판단을 후보로 두고 가장 높은 단계를 채택
+        # (레이더 단독 대상은 radar_tracker가 연속 N프레임 지속돼야 올려 보내므로 여기서 또 거르지 않음)
+        candidates = [cam_worst] if cam_worst else []
+        radar = self._safe("레이더", self._radar_fn, None)
+        if radar:
+            radar_risk = self._safe(
+                "레이더 위험도",
+                lambda: self._risk_fn(radar["distance_m"], radar["ttc_sec"], radar["in_path"], stopping),
+                "SAFE",
+            )
+            matched = self._match(radar, cam_zone) if radar["in_path"] else None
+            if matched is not None:
+                fused = {
+                    "risk": radar_risk, "track_id": matched["track_id"], "class_name": matched["class_name"],
+                    "distance": radar["distance_m"], "ttc": radar["ttc_sec"],
+                    "in_collision_zone": True, "source": "camera+radar",
+                }
+                # 카메라의 대표 대상이 바로 이 대상이면 레이더 수치로 교체하고, 다른 대상이면 둘 다 후보로 둔다
+                if cam_worst is not None and cam_worst is not matched and cam_worst.get("track_id") != matched.get("track_id"):
+                    candidates = [cam_worst, fused]
+                else:
+                    candidates = [fused]
+            elif radar_risk != "SAFE":
+                candidates.append({
+                    "risk": radar_risk, "track_id": None, "class_name": "레이더_전방",
+                    "distance": radar["distance_m"], "ttc": radar["ttc_sec"],
+                    "in_collision_zone": radar["in_path"], "source": "radar",
+                })
+
+        worst, rank = None, -1
+        for candidate in candidates:  # 같은 단계면 먼저 온 것(카메라)을 유지
+            if RISK_RANK[candidate["risk"]] > rank:
+                worst, rank = candidate, RISK_RANK[candidate["risk"]]
+
+        # 초음파: "더 높을 때만" 덮어씀 (센서를 뺀 상태에서는 항상 SAFE)
         us = self._safe("초음파", self._ultrasonic_fn, None)
         if us:
             us_risk, us_side, us_cm = us
@@ -114,22 +171,6 @@ class RiskArbiter:
                     "risk": us_risk, "track_id": None, "class_name": f"초음파_{us_side}",
                     "distance": (us_cm / 100.0) if us_cm is not None else 0.0,
                     "ttc": None, "in_collision_zone": True,
-                }
-
-        # 레이더: 카메라와 같은 get_final_risk 기준을 써서 임계값이 두 벌이 되지 않게 함
-        radar = self._safe("레이더", self._radar_fn, None)
-        if radar:
-            radar_risk = self._safe(
-                "레이더 위험도",
-                lambda: self._risk_fn(radar["distance_m"], radar["ttc_sec"], radar["in_path"], stopping),
-                "SAFE",
-            )
-            if radar_risk != "SAFE" and RISK_RANK[radar_risk] > rank:
-                rank = RISK_RANK[radar_risk]
-                worst = {
-                    "risk": radar_risk, "track_id": None, "class_name": "레이더_전방",
-                    "distance": radar["distance_m"], "ttc": radar["ttc_sec"],
-                    "in_collision_zone": radar["in_path"],
                 }
 
         # IMU: 최상위 — 충격은 순간에 한 번 경고음, 충격/전복이면 무조건 DANGER
