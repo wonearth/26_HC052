@@ -1,0 +1,119 @@
+"""app.py의 실제 함수들을 중재자에 연결해서 스모크 테스트한다.
+Mac에는 picamera2/gpiozero 등이 없으므로 하드웨어 모듈만 가짜로 대체한다 (app.py 로직은 그대로)."""
+import os
+import sys
+import unittest
+from unittest import mock
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+
+def _install_stubs():
+    for name in ("picamera2", "onnxruntime", "gpiozero", "serial", "cv2", "flask",
+                 "scipy", "scipy.optimize", "numpy", "bluezero"):
+        if name not in sys.modules:
+            try:
+                __import__(name)
+            except Exception:
+                sys.modules[name] = mock.MagicMock()
+
+
+class FakeBuzzer:
+    def __init__(self):
+        self.calls = []
+
+    def beep(self, **kw):
+        self.calls.append(("beep", kw.get("on_time"), kw.get("off_time"), kw.get("n")))
+
+    def off(self):
+        self.calls.append(("off",))
+
+
+class FakeLed:
+    def __init__(self):
+        self.state = False
+
+    def on(self):
+        self.state = True
+
+    def off(self):
+        self.state = False
+
+
+class AppWiringTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _install_stubs()
+        import app
+        cls.app = app
+
+    def setUp(self):
+        a = self.app
+        a.buzzer, a.led = FakeBuzzer(), FakeLed()
+        a._buzzer_pattern, a._led_active, a._impact_alarm_until = None, False, 0.0
+        self.recorded, self.sampled = [], []
+        a._event_recorder = lambda *args: self.recorded.append(args)
+        a._risk_sampler = lambda r: self.sampled.append(r)
+        a._speed_getter = lambda: 15.0
+        import radar_sensor
+        radar_sensor.clear_target()
+        self.radar = radar_sensor
+        self.imu = {}
+        a.imu_sensor.get_imu_state = lambda: self.imu
+        a.ultrasonic_sensor.get_worst_side = lambda: ("SAFE", "좌측", None)
+        self.arb = a.risk_arbiter.RiskArbiter(
+            speed_getter=a._get_speed,
+            stopping_distance_fn=a.calculate_stopping_distance,
+            risk_fn=a.get_final_risk,
+            ultrasonic_fn=lambda: a.ultrasonic_sensor.get_worst_side(),
+            radar_fn=a.radar_sensor.get_forward_target,
+            imu_fn=lambda: a.imu_sensor.get_imu_state(),
+            on_state=a.update_live_state,
+            on_camera_offline=a.mark_camera_offline,
+            on_buzzer=a.set_buzzer,
+            on_led=a.set_led,
+            on_impact_alarm=a.sound_impact_alarm,
+            on_sample=a._sample_risk,
+            on_event=a._record_event,
+            log=lambda m: self.fail(f"중재자가 오류를 삼킴(시그니처 불일치 가능): {m}"),
+        )
+
+    def test_radar_danger_reaches_buzzer_led_state_and_record(self):
+        self.radar.update_target(4.0, 4.0, 0.2)
+        self.arb._created_at -= 100
+        r = self.arb.tick()
+        a = self.app
+        self.assertEqual(r["risk"], "DANGER")
+        self.assertIn(("beep", 0.08, 0.08, None), a.buzzer.calls)   # 위험 = 빠른 패턴
+        self.assertTrue(a.led.state)
+        live = a.get_live_state()
+        self.assertEqual(live["risk"], "danger")
+        self.assertIn("레이더 감지", live["message"])
+        self.assertEqual(self.recorded[-1][2], "레이더_전방")
+        self.assertEqual(self.sampled[-1], "danger")
+
+    def test_camera_offline_sets_live_notice_without_buzzer(self):
+        self.arb._created_at -= 100
+        self.arb.tick()
+        a = self.app
+        live = a.get_live_state()
+        self.assertEqual(live["title"], "카메라 연결 끊김")
+        self.assertFalse(a.led.state)
+        self.assertFalse(any(c[0] == "beep" for c in a.buzzer.calls))
+
+    def test_imu_impact_sounds_one_second_alarm(self):
+        self.imu = {"impact": True}
+        self.arb.tick()
+        self.assertIn(("beep", 1.0, 0.1, 1), self.app.buzzer.calls)
+
+    def test_camera_target_flows_through_same_outputs(self):
+        self.arb.publish_camera({"risk": "WARNING", "track_id": 3, "class_name": "사람",
+                                 "distance": 6.0, "ttc": 2.0, "in_collision_zone": True})
+        self.arb.tick()
+        self.assertIn(("beep", 0.15, 0.6, None), self.app.buzzer.calls)  # 경고 = 느린 패턴
+        self.assertEqual(self.recorded[-1][0:3], ("warning", 3, "사람"))
+
+
+if __name__ == "__main__":
+    unittest.main()
