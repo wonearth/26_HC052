@@ -69,10 +69,6 @@ CLASS_INFO = {
     7: ("트럭", 2.5),
 }
 
-# 영상 위에 그리는 박스 라벨 전용. OpenCV 4.x의 기본 글꼴(Hershey)은 한글을 못 그려서
-# "사람"이 "???"로 나오므로, 영상 위 라벨만 영어로 그린다 (앱/기록/대시보드 문구는 CLASS_INFO의 한글 그대로).
-OVERLAY_LABELS = {0: "Person", 1: "Bicycle", 2: "Car", 3: "Motorcycle", 5: "Bus", 7: "Truck"}
-
 BUZZER_GPIO_PIN = 17  # 실제 배선한 GPIO 핀 번호 (BCM 기준)
 LED_GPIO_PIN = 27      # 위험(DANGER) 단계에서만 켜지는 시각 경고등
 
@@ -570,7 +566,6 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 scores = pred[4:]
                 class_id = int(np.argmax(scores))
                 confidence = float(scores[class_id])
-
                 if class_id not in target_classes:
                     continue
 
@@ -691,7 +686,8 @@ def detection_loop(picam2, yolo_session, yolo_input_name, tracker):
                 if display_frame is not None:
                     color = RISK_COLORS[final_risk]
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                    label = f"{OVERLAY_LABELS.get(cls_id, 'Object')} {distance:.1f}m"  # 한글은 OpenCV 4.x에서 ???로 깨짐
+                    display_names = {"사람": "person", "자전거": "bicycle", "자동차": "car", "오토바이": "motorcycle", "버스": "bus", "트럭": "truck"}
+                    label = f"{display_names.get(class_name, class_name)} {distance:.1f}m"
                     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                     label_y1 = max(0, y1 - th - 8)
                     cv2.rectangle(display_frame, (x1, label_y1), (x1 + tw + 6, y1), color, -1)
